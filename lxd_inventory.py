@@ -56,7 +56,8 @@ class LXDInventory:
         if self.args and self.args.status:
             filters['status'] = [self.args.status]
         else:
-            filters['status'] = os.getenv('LXD_FILTER_STATUS', 'running,stopped').split(',')
+            env_status = os.getenv('LXD_FILTER_STATUS', 'running,stopped')
+            filters['status'] = env_status.split(',') if env_status else ['running', 'stopped']
         
         # Type filter - map CLI args to LXD types
         if self.args and self.args.type:
@@ -151,7 +152,20 @@ class LXDInventory:
             # Get list of all projects first
             try:
                 projects_data = self._make_request("/projects")
-                projects = list(projects_data.keys())
+                # projects_data is a list of project names when using recursion=0 (default)
+                # Let's try both approaches to be safe
+                if isinstance(projects_data, list):
+                    projects = projects_data
+                elif isinstance(projects_data, dict):
+                    projects = list(projects_data.keys())
+                else:
+                    # Fallback: try to get projects without recursion
+                    projects_list = self._make_request("/projects?recursion=0")
+                    if isinstance(projects_list, list):
+                        # Extract project names from URLs like '/1.0/projects/default'
+                        projects = [url.split('/')[-1] for url in projects_list]
+                    else:
+                        projects = ['default']
             except Exception as e:
                 print(f"Warning: Could not fetch all projects, using default: {e}", file=sys.stderr)
                 projects = ['default']
@@ -173,13 +187,14 @@ class LXDInventory:
     def _filter_instance(self, instance: Dict[str, Any]) -> bool:
         """Apply filters to determine if an instance should be included."""
         # Filter by status
-        status_filter = [s.lower() for s in self.config['filters']['status']]
-        if 'all' not in status_filter and instance['status'].lower() not in status_filter:
-            return False
+        status_filter = [s.lower().strip() for s in self.config['filters']['status']]
+        if status_filter and 'all' not in status_filter:
+            if instance['status'].lower() not in status_filter:
+                return False
         
         # Filter by type
         type_filter = self.config['filters']['type']
-        if 'all' not in type_filter and instance['type'] not in type_filter:
+        if type_filter and 'all' not in type_filter and instance['type'] not in type_filter:
             return False
         
         # Filter by profiles

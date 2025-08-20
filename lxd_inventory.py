@@ -43,12 +43,22 @@ class LXDInventory:
     def _load_config(self) -> Dict[str, Any]:
         """Load configuration from environment variables, CLI args, or defaults."""
         config = {
-            'endpoint': os.getenv('LXD_ENDPOINT', 'unix:///var/lib/lxd/unix.socket'),
+            'verify_ssl': os.getenv('LXD_VERIFY_SSL', 'false').lower() == 'true',
             'cert_path': os.getenv('LXD_CERT_PATH'),
             'key_path': os.getenv('LXD_KEY_PATH'),
             'ca_cert_path': os.getenv('LXD_CA_CERT_PATH'),
-            'verify_ssl': os.getenv('LXD_VERIFY_SSL', 'false').lower() == 'true',
         }
+        
+        # LXD endpoint/host - CLI --host takes precedence
+        if self.args and self.args.host:
+            # If --host is provided, construct the endpoint
+            host = self.args.host
+            if not host.startswith(('http://', 'https://', 'unix://')):
+                # Default to https if no protocol specified
+                host = f"https://{host}:8443"
+            config['endpoint'] = host
+        else:
+            config['endpoint'] = os.getenv('LXD_ENDPOINT', 'unix:///var/lib/lxd/unix.socket')
         
         # Handle filters with CLI args taking precedence
         filters = {}
@@ -84,6 +94,13 @@ class LXDInventory:
         else:
             env_profiles = os.getenv('LXD_FILTER_PROFILES', '')
             filters['profiles'] = env_profiles.split(',') if env_profiles else []
+        
+        # Ignore interfaces filter
+        if self.args and self.args.ignore_interface:
+            filters['ignore_interfaces'] = [i.strip() for i in self.args.ignore_interface.split(',')]
+        else:
+            env_ignore = os.getenv('LXD_IGNORE_INTERFACES', 'lo,docker0,cilium_host,cilium_vxlan,cilium_net')
+            filters['ignore_interfaces'] = env_ignore.split(',') if env_ignore else ['lo']
         
         # Exclude names (only from env for now)
         filters['exclude_names'] = os.getenv('LXD_EXCLUDE_NAMES', '').split(',') if os.getenv('LXD_EXCLUDE_NAMES') else []
@@ -248,9 +265,15 @@ class LXDInventory:
         if not network or not isinstance(network, dict):
             return None
         
-        # Look for the first non-loopback IPv4 address
+        ignore_interfaces = self.config['filters']['ignore_interfaces']
+        if self.debug:
+            print(f"Debug: Ignoring interfaces: {ignore_interfaces}", file=sys.stderr)
+        
+        # Look for the first non-ignored IPv4 address
         for interface_name, interface_data in network.items():
-            if interface_name == 'lo':  # Skip loopback
+            if interface_name in ignore_interfaces:
+                if self.debug:
+                    print(f"Debug: Skipping ignored interface: {interface_name}", file=sys.stderr)
                 continue
             
             if not isinstance(interface_data, dict):
@@ -262,6 +285,8 @@ class LXDInventory:
                 
             for addr in addresses:
                 if isinstance(addr, dict) and addr.get('family') == 'inet' and addr.get('scope') == 'global':
+                    if self.debug:
+                        print(f"Debug: Found IP {addr.get('address')} on interface {interface_name}", file=sys.stderr)
                     return addr.get('address')
         
         return None

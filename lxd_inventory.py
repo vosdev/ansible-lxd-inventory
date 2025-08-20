@@ -34,26 +34,60 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 class LXDInventory:
-    def __init__(self):
+    def __init__(self, args=None):
+        self.args = args
         self.config = self._load_config()
         self.session = self._create_session()
         
     def _load_config(self) -> Dict[str, Any]:
-        """Load configuration from environment variables or defaults."""
-        return {
+        """Load configuration from environment variables, CLI args, or defaults."""
+        config = {
             'endpoint': os.getenv('LXD_ENDPOINT', 'unix:///var/lib/lxd/unix.socket'),
             'cert_path': os.getenv('LXD_CERT_PATH'),
             'key_path': os.getenv('LXD_KEY_PATH'),
             'ca_cert_path': os.getenv('LXD_CA_CERT_PATH'),
             'verify_ssl': os.getenv('LXD_VERIFY_SSL', 'false').lower() == 'true',
-            'filters': {
-                'status': os.getenv('LXD_FILTER_STATUS', 'Running').split(','),
-                'type': os.getenv('LXD_FILTER_TYPE', 'container,virtual-machine').split(','),
-                'project': os.getenv('LXD_FILTER_PROJECT', 'default'),
-                'profiles': os.getenv('LXD_FILTER_PROFILES', '').split(',') if os.getenv('LXD_FILTER_PROFILES') else [],
-                'exclude_names': os.getenv('LXD_EXCLUDE_NAMES', '').split(',') if os.getenv('LXD_EXCLUDE_NAMES') else [],
-            }
         }
+        
+        # Handle filters with CLI args taking precedence
+        filters = {}
+        
+        # Status filter
+        if self.args and self.args.status:
+            filters['status'] = [self.args.status]
+        else:
+            filters['status'] = os.getenv('LXD_FILTER_STATUS', 'running,stopped').split(',')
+        
+        # Type filter - map CLI args to LXD types
+        if self.args and self.args.type:
+            type_map = {'vm': 'virtual-machine', 'lxc': 'container'}
+            cli_types = [t.strip() for t in self.args.type.split(',')]
+            filters['type'] = [type_map.get(t, t) for t in cli_types]
+        else:
+            env_types = os.getenv('LXD_FILTER_TYPE', 'container,virtual-machine').split(',')
+            filters['type'] = env_types
+        
+        # Project filter
+        if self.args and self.args.all_projects:
+            filters['projects'] = ['all']
+        elif self.args and self.args.project:
+            filters['projects'] = [p.strip() for p in self.args.project.split(',')]
+        else:
+            env_project = os.getenv('LXD_FILTER_PROJECT', 'default')
+            filters['projects'] = [env_project] if env_project else ['default']
+        
+        # Profile filter
+        if self.args and self.args.profile:
+            filters['profiles'] = [p.strip() for p in self.args.profile.split(',')]
+        else:
+            env_profiles = os.getenv('LXD_FILTER_PROFILES', '')
+            filters['profiles'] = env_profiles.split(',') if env_profiles else []
+        
+        # Exclude names (only from env for now)
+        filters['exclude_names'] = os.getenv('LXD_EXCLUDE_NAMES', '').split(',') if os.getenv('LXD_EXCLUDE_NAMES') else []
+        
+        config['filters'] = filters
+        return config
     
     def _create_session(self) -> requests.Session:
         """Create a requests session with appropriate configuration."""
@@ -110,9 +144,31 @@ class LXDInventory:
     
     def _get_instances(self) -> List[Dict[str, Any]]:
         """Get all instances from LXD with detailed information."""
-        project = self.config['filters']['project']
-        path = f"/instances?recursion=2&project={project}"
-        return self._make_request(path)
+        all_instances = []
+        projects = self.config['filters']['projects']
+        
+        if 'all' in projects:
+            # Get list of all projects first
+            try:
+                projects_data = self._make_request("/projects")
+                projects = list(projects_data.keys())
+            except Exception as e:
+                print(f"Warning: Could not fetch all projects, using default: {e}", file=sys.stderr)
+                projects = ['default']
+        
+        for project in projects:
+            try:
+                path = f"/instances?recursion=2&project={project}"
+                instances = self._make_request(path)
+                # Add project info to each instance
+                for instance in instances:
+                    instance['lxd_project'] = project
+                all_instances.extend(instances)
+            except Exception as e:
+                print(f"Warning: Could not fetch instances from project '{project}': {e}", file=sys.stderr)
+                continue
+        
+        return all_instances
     
     def _filter_instance(self, instance: Dict[str, Any]) -> bool:
         """Apply filters to determine if an instance should be included."""
@@ -210,7 +266,7 @@ class LXDInventory:
                 'lxd_status': instance['status'],
                 'lxd_architecture': instance['architecture'],
                 'lxd_profiles': instance.get('profiles', []),
-                'lxd_project': self.config['filters']['project'],
+                'lxd_project': instance.get('lxd_project', 'default'),
             }
             
             if ip_address:
@@ -251,9 +307,18 @@ def main():
     parser.add_argument('--host', help='Get variables for a specific host')
     parser.add_argument('--yaml', action='store_true', help='Output in YAML format')
     
+    # Filtering arguments
+    parser.add_argument('--status', choices=['running', 'stopped'], 
+                       help='Filter by instance status')
+    parser.add_argument('--type', help='Filter by type (vm,lxc) - comma separated')
+    parser.add_argument('--project', help='Filter by project(s) - comma separated')
+    parser.add_argument('--all-projects', action='store_true', 
+                       help='Include all projects (overrides --project)')
+    parser.add_argument('--profile', help='Filter by profile(s) - comma separated')
+    
     args = parser.parse_args()
     
-    inventory = LXDInventory()
+    inventory = LXDInventory(args)
     
     if args.list:
         if args.yaml:

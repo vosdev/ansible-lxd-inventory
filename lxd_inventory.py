@@ -36,6 +36,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 class LXDInventory:
     def __init__(self, args=None):
         self.args = args
+        self.debug = args and args.debug
         self.config = self._load_config()
         self.session = self._create_session()
         
@@ -56,8 +57,8 @@ class LXDInventory:
         if self.args and self.args.status:
             filters['status'] = [self.args.status]
         else:
-            env_status = os.getenv('LXD_FILTER_STATUS', 'running,stopped')
-            filters['status'] = env_status.split(',') if env_status else ['running', 'stopped']
+            env_status = os.getenv('LXD_FILTER_STATUS', 'running,stopped,frozen,error')
+            filters['status'] = env_status.split(',') if env_status else ['running', 'stopped', 'frozen', 'error']
         
         # Type filter - map CLI args to LXD types
         if self.args and self.args.type:
@@ -151,29 +152,54 @@ class LXDInventory:
         if 'all' in projects:
             # Get list of all projects first
             try:
-                projects_data = self._make_request("/projects")
-                # projects_data is a list of project names when using recursion=0 (default)
-                # Let's try both approaches to be safe
+                if self.debug:
+                    print(f"Debug: Fetching all projects...", file=sys.stderr)
+                    
+                # Try different approaches to get project names
+                projects_data = self._make_request("/projects?recursion=0")
+                
+                if self.debug:
+                    print(f"Debug: Projects API response type: {type(projects_data)}", file=sys.stderr)
+                    print(f"Debug: Projects API response: {projects_data[:3] if isinstance(projects_data, list) else projects_data}", file=sys.stderr)
+                
                 if isinstance(projects_data, list):
-                    projects = projects_data
-                elif isinstance(projects_data, dict):
-                    projects = list(projects_data.keys())
+                    # Extract project names from URLs like '/1.0/projects/default'
+                    projects = [url.split('/')[-1] for url in projects_data if '/projects/' in url]
                 else:
-                    # Fallback: try to get projects without recursion
-                    projects_list = self._make_request("/projects?recursion=0")
-                    if isinstance(projects_list, list):
-                        # Extract project names from URLs like '/1.0/projects/default'
-                        projects = [url.split('/')[-1] for url in projects_list]
-                    else:
+                    # If recursion=0 doesn't work, try without recursion parameter
+                    try:
+                        projects_data = self._make_request("/projects")
+                        if isinstance(projects_data, dict):
+                            projects = list(projects_data.keys())
+                        elif isinstance(projects_data, list):
+                            projects = [url.split('/')[-1] for url in projects_data if '/projects/' in url]
+                        else:
+                            projects = ['default']
+                    except:
                         projects = ['default']
+                
+                # If we still don't have projects, fall back to default
+                if not projects:
+                    projects = ['default']
+                    
+                if self.debug:
+                    print(f"Debug: Found projects: {projects}", file=sys.stderr)
+                    
             except Exception as e:
                 print(f"Warning: Could not fetch all projects, using default: {e}", file=sys.stderr)
                 projects = ['default']
         
         for project in projects:
             try:
+                if self.debug:
+                    print(f"Debug: Fetching instances from project '{project}'...", file=sys.stderr)
+                    
                 path = f"/instances?recursion=2&project={project}"
                 instances = self._make_request(path)
+                
+                if self.debug:
+                    print(f"Debug: Found {len(instances)} instances in project '{project}'", file=sys.stderr)
+                
                 # Add project info to each instance
                 for instance in instances:
                     instance['lxd_project'] = project
@@ -181,6 +207,9 @@ class LXDInventory:
             except Exception as e:
                 print(f"Warning: Could not fetch instances from project '{project}': {e}", file=sys.stderr)
                 continue
+        
+        if self.debug:
+            print(f"Debug: Total instances found: {len(all_instances)}", file=sys.stderr)
         
         return all_instances
     
@@ -212,16 +241,27 @@ class LXDInventory:
     def _get_instance_ip(self, instance: Dict[str, Any]) -> Optional[str]:
         """Extract the primary IP address from an instance."""
         state = instance.get('state', {})
-        network = state.get('network', {})
+        if not state:
+            return None
+            
+        network = state.get('network')
+        if not network or not isinstance(network, dict):
+            return None
         
         # Look for the first non-loopback IPv4 address
         for interface_name, interface_data in network.items():
             if interface_name == 'lo':  # Skip loopback
                 continue
             
+            if not isinstance(interface_data, dict):
+                continue
+                
             addresses = interface_data.get('addresses', [])
+            if not isinstance(addresses, list):
+                continue
+                
             for addr in addresses:
-                if addr.get('family') == 'inet' and addr.get('scope') == 'global':
+                if isinstance(addr, dict) and addr.get('family') == 'inet' and addr.get('scope') == 'global':
                     return addr.get('address')
         
         return None
@@ -242,6 +282,8 @@ class LXDInventory:
             'lxd_vms': {'hosts': []},
             'lxd_running': {'hosts': []},
             'lxd_stopped': {'hosts': []},
+            'lxd_frozen': {'hosts': []},
+            'lxd_error': {'hosts': []},
         }
         
         for instance in instances:
@@ -266,6 +308,10 @@ class LXDInventory:
                 groups['lxd_running']['hosts'].append(name)
             elif status == 'stopped':
                 groups['lxd_stopped']['hosts'].append(name)
+            elif status == 'frozen':
+                groups['lxd_frozen']['hosts'].append(name)
+            elif status == 'error':
+                groups['lxd_error']['hosts'].append(name)
             
             # Create profile-based groups
             for profile in instance.get('profiles', []):
@@ -323,13 +369,15 @@ def main():
     parser.add_argument('--yaml', action='store_true', help='Output in YAML format')
     
     # Filtering arguments
-    parser.add_argument('--status', choices=['running', 'stopped'], 
+    parser.add_argument('--status', choices=['running', 'stopped', 'frozen', 'error'], 
                        help='Filter by instance status')
     parser.add_argument('--type', help='Filter by type (vm,lxc) - comma separated')
     parser.add_argument('--project', help='Filter by project(s) - comma separated')
     parser.add_argument('--all-projects', action='store_true', 
                        help='Include all projects (overrides --project)')
     parser.add_argument('--profile', help='Filter by profile(s) - comma separated')
+    parser.add_argument('--debug', action='store_true', 
+                       help='Enable debug output')
     
     args = parser.parse_args()
     

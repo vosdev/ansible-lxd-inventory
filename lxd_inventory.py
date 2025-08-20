@@ -365,8 +365,11 @@ class LXDInventory:
 def main():
     parser = argparse.ArgumentParser(description='LXD Ansible Dynamic Inventory')
     parser.add_argument('--list', action='store_true', help='List all hosts')
-    parser.add_argument('--host', help='Get variables for a specific host')
+    parser.add_argument('--instance', help='Get variables for a specific instance')
     parser.add_argument('--yaml', action='store_true', help='Output in YAML format')
+    
+    # LXD connection
+    parser.add_argument('--host', help='LXD host/cluster to connect to (overrides LXD_ENDPOINT)')
     
     # Filtering arguments
     parser.add_argument('--status', choices=['running', 'stopped', 'frozen', 'error'], 
@@ -376,6 +379,7 @@ def main():
     parser.add_argument('--all-projects', action='store_true', 
                        help='Include all projects (overrides --project)')
     parser.add_argument('--profile', help='Filter by profile(s) - comma separated')
+    parser.add_argument('--ignore-interface', help='Interfaces to ignore when finding IP (comma separated)')
     parser.add_argument('--debug', action='store_true', 
                        help='Enable debug output')
     
@@ -389,12 +393,12 @@ def main():
             print(yaml.dump(data, default_flow_style=False))
         else:
             print(inventory.list_inventory())
-    elif args.host:
-        host_vars = inventory.get_host_vars(args.host)
+    elif args.instance:
+        instance_vars = inventory.get_instance_vars(args.instance)
         if args.yaml:
-            print(yaml.dump(host_vars, default_flow_style=False))
+            print(yaml.dump(instance_vars, default_flow_style=False))
         else:
-            print(json.dumps(host_vars, indent=2))
+            print(json.dumps(instance_vars, indent=2))
     else:
         parser.print_help()
 

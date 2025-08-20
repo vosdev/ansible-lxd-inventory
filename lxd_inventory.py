@@ -377,10 +377,10 @@ class LXDInventory:
         
         return inventory
     
-    def get_host_vars(self, hostname: str) -> Dict[str, Any]:
-        """Get variables for a specific host."""
+    def get_instance_vars(self, instance_name: str) -> Dict[str, Any]:
+        """Get variables for a specific instance."""
         inventory = self._generate_inventory()
-        return inventory['_meta']['hostvars'].get(hostname, {})
+        return inventory['_meta']['hostvars'].get(instance_name, {})
     
     def list_inventory(self) -> str:
         """Return the full inventory as JSON."""

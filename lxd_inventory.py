@@ -390,7 +390,7 @@ class LXDInventory:
 def main():
     parser = argparse.ArgumentParser(description='LXD Ansible Dynamic Inventory')
     parser.add_argument('--list', action='store_true', help='List all hosts')
-    parser.add_argument('--instance', help='Get variables for a specific instance')
+    parser.add_argument('--instance', help='Get variables for a specific instance (mutually exclusive with --list)')
     parser.add_argument('--yaml', action='store_true', help='Output in YAML format')
     
     # LXD connection
@@ -398,17 +398,24 @@ def main():
     
     # Filtering arguments
     parser.add_argument('--status', choices=['running', 'stopped', 'frozen', 'error'], 
-                       help='Filter by instance status')
-    parser.add_argument('--type', help='Filter by type (vm,lxc) - comma separated')
+                       help='Filter by instance status (only applies to --list)')
+    parser.add_argument('--type', help='Filter by type (vm,lxc) - comma separated (only applies to --list)')
     parser.add_argument('--project', help='Filter by project(s) - comma separated')
     parser.add_argument('--all-projects', action='store_true', 
-                       help='Include all projects (overrides --project)')
-    parser.add_argument('--profile', help='Filter by profile(s) - comma separated')
+                       help='Include all projects - overrides --project (only applies to --list)')
+    parser.add_argument('--profile', help='Filter by profile(s) - comma separated (only applies to --list)')
     parser.add_argument('--ignore-interface', help='Interfaces to ignore when finding IP (comma separated)')
     parser.add_argument('--debug', action='store_true', 
                        help='Enable debug output')
     
     args = parser.parse_args()
+    
+    # Validate mutually exclusive arguments
+    if args.list and args.instance:
+        parser.error("--list and --instance are mutually exclusive")
+    
+    if not args.list and not args.instance:
+        parser.error("Either --list or --instance must be specified")
     
     inventory = LXDInventory(args)
     
@@ -420,12 +427,13 @@ def main():
             print(inventory.list_inventory())
     elif args.instance:
         instance_vars = inventory.get_instance_vars(args.instance)
+        if not instance_vars:
+            print(f"Instance '{args.instance}' not found", file=sys.stderr)
+            sys.exit(1)
         if args.yaml:
             print(yaml.dump(instance_vars, default_flow_style=False))
         else:
             print(json.dumps(instance_vars, indent=2))
-    else:
-        parser.print_help()
 
 
 if __name__ == '__main__':

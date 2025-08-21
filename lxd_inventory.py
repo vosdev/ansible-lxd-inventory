@@ -378,9 +378,21 @@ class LXDInventory:
         return inventory
     
     def get_instance_vars(self, instance_name: str) -> Dict[str, Any]:
-        """Get variables for a specific instance."""
+        """Get variables for a specific instance in Ansible dynamic inventory format."""
         inventory = self._generate_inventory()
-        return inventory['_meta']['hostvars'].get(instance_name, {})
+        instance_vars = inventory['_meta']['hostvars'].get(instance_name, {})
+        
+        if not instance_vars:
+            return {}
+        
+        # Return in the same format as --list but for just this instance
+        return {
+            "_meta": {
+                "hostvars": {
+                    instance_name: instance_vars
+                }
+            }
+        }
     
     def list_inventory(self) -> str:
         """Return the full inventory as JSON."""
@@ -427,7 +439,7 @@ def main():
             print(inventory.list_inventory())
     elif args.instance:
         instance_vars = inventory.get_instance_vars(args.instance)
-        if not instance_vars:
+        if not instance_vars.get('_meta', {}).get('hostvars'):
             print(f"Instance '{args.instance}' not found", file=sys.stderr)
             sys.exit(1)
         if args.yaml:

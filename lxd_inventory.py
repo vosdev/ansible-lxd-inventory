@@ -102,6 +102,12 @@ class LXDInventory:
             env_ignore = os.getenv('LXD_IGNORE_INTERFACES', 'lo,docker0,cilium_host,cilium_vxlan,cilium_net')
             filters['ignore_interfaces'] = env_ignore.split(',') if env_ignore else ['lo']
         
+        # IPv6 preference
+        if self.args and self.args.prefer_ipv6:
+            filters['prefer_ipv6'] = True
+        else:
+            filters['prefer_ipv6'] = os.getenv('LXD_PREFER_IPV6', 'false').lower() == 'true'
+        
         # Exclude names (only from env for now)
         filters['exclude_names'] = os.getenv('LXD_EXCLUDE_NAMES', '').split(',') if os.getenv('LXD_EXCLUDE_NAMES') else []
         
@@ -266,10 +272,16 @@ class LXDInventory:
             return None
         
         ignore_interfaces = self.config['filters']['ignore_interfaces']
+        prefer_ipv6 = self.config['filters']['prefer_ipv6']
+        
         if self.debug:
             print(f"Debug: Ignoring interfaces: {ignore_interfaces}", file=sys.stderr)
+            print(f"Debug: Prefer IPv6: {prefer_ipv6}", file=sys.stderr)
         
-        # Look for the first non-ignored IPv4 address
+        # Collect all valid IP addresses
+        ipv4_addresses = []
+        ipv6_addresses = []
+        
         for interface_name, interface_data in network.items():
             if interface_name in ignore_interfaces:
                 if self.debug:
@@ -284,10 +296,44 @@ class LXDInventory:
                 continue
                 
             for addr in addresses:
-                if isinstance(addr, dict) and addr.get('family') == 'inet' and addr.get('scope') == 'global':
+                if not isinstance(addr, dict) or addr.get('scope') != 'global':
+                    continue
+                    
+                ip_address = addr.get('address')
+                family = addr.get('family')
+                
+                if family == 'inet' and ip_address:
+                    ipv4_addresses.append((ip_address, interface_name))
                     if self.debug:
-                        print(f"Debug: Found IP {addr.get('address')} on interface {interface_name}", file=sys.stderr)
-                    return addr.get('address')
+                        print(f"Debug: Found IPv4 {ip_address} on interface {interface_name}", file=sys.stderr)
+                elif family == 'inet6' and ip_address:
+                    ipv6_addresses.append((ip_address, interface_name))
+                    if self.debug:
+                        print(f"Debug: Found IPv6 {ip_address} on interface {interface_name}", file=sys.stderr)
+        
+        # Return preferred IP type first, fallback to the other
+        if prefer_ipv6:
+            if ipv6_addresses:
+                ip, interface = ipv6_addresses[0]
+                if self.debug:
+                    print(f"Debug: Using preferred IPv6 {ip} from interface {interface}", file=sys.stderr)
+                return ip
+            elif ipv4_addresses:
+                ip, interface = ipv4_addresses[0]
+                if self.debug:
+                    print(f"Debug: Fallback to IPv4 {ip} from interface {interface}", file=sys.stderr)
+                return ip
+        else:
+            if ipv4_addresses:
+                ip, interface = ipv4_addresses[0]
+                if self.debug:
+                    print(f"Debug: Using preferred IPv4 {ip} from interface {interface}", file=sys.stderr)
+                return ip
+            elif ipv6_addresses:
+                ip, interface = ipv6_addresses[0]
+                if self.debug:
+                    print(f"Debug: Fallback to IPv6 {ip} from interface {interface}", file=sys.stderr)
+                return ip
         
         return None
     
@@ -417,6 +463,8 @@ def main():
                        help='Include all projects - overrides --project (only applies to --list)')
     parser.add_argument('--profile', help='Filter by profile(s) - comma separated (only applies to --list)')
     parser.add_argument('--ignore-interface', help='Interfaces to ignore when finding IP (comma separated)')
+    parser.add_argument('--prefer-ipv6', action='store_true', 
+                       help='Prefer IPv6 addresses over IPv4 for ansible_host')
     parser.add_argument('--debug', action='store_true', 
                        help='Enable debug output')
     

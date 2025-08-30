@@ -132,6 +132,7 @@ class LXDInventory:
             'cert_path': endpoint_config.get('cert_path', global_defaults.get('cert_path')),
             'key_path': endpoint_config.get('key_path', global_defaults.get('key_path')),
             'ca_cert_path': endpoint_config.get('ca_cert_path', global_defaults.get('ca_cert_path')),
+            'hostname_format': endpoint_config.get('hostname_format', global_defaults.get('hostname_format', '{name}')),
         }
         
         # Merge filters: global defaults < endpoint config < CLI args
@@ -526,6 +527,35 @@ class LXDInventory:
         
         return None
     
+    def _format_hostname(self, instance: Dict[str, Any], endpoint_config: Dict[str, Any]) -> str:
+        """Format hostname using the configured hostname_format template."""
+        format_template = endpoint_config['hostname_format']
+        
+        # Available variables for hostname formatting
+        variables = {
+            'name': instance['name'],
+            'project': instance.get('lxd_project', 'default'),
+            'endpoint': instance.get('lxd_endpoint', endpoint_config['name']),
+            'type': instance['type'],
+            'status': instance['status'].lower(),
+        }
+        
+        # Replace variables in the format template
+        try:
+            hostname = format_template.format(**variables)
+            # Sanitize hostname - replace invalid characters with hyphens
+            import re
+            hostname = re.sub(r'[^a-zA-Z0-9.-]', '-', hostname)
+            # Remove consecutive hyphens and leading/trailing hyphens
+            hostname = re.sub(r'-+', '-', hostname).strip('-')
+            return hostname
+        except KeyError as e:
+            print(f"Warning: Invalid variable '{e.args[0]}' in hostname_format template, using instance name", file=sys.stderr)
+            return instance['name']
+        except Exception as e:
+            print(f"Warning: Error formatting hostname: {e}, using instance name", file=sys.stderr)
+            return instance['name']
+    
     def _generate_inventory(self) -> Dict[str, Any]:
         """Generate the Ansible inventory from all endpoints."""
         inventory = {
@@ -561,66 +591,61 @@ class LXDInventory:
                     continue
                 
                 name = instance['name']
-                endpoint_prefix = endpoint_config.get('host_prefix', endpoint_name)
                 
-                # Create unique host name with endpoint prefix if there are multiple endpoints
-                if len(self.config['endpoints']) > 1:
-                    unique_name = f"{endpoint_prefix}_{name}"
-                else:
-                    unique_name = name
+                # Format hostname using the configured template
+                formatted_hostname = self._format_hostname(instance, endpoint_config)
                 
-                # Check for name conflicts and resolve them
-                if unique_name in inventory['_meta']['hostvars']:
-                    # Name conflict - use more specific naming
-                    unique_name = f"{endpoint_name}_{name}"
-                    if unique_name in inventory['_meta']['hostvars']:
-                        # Still conflicts, add a counter
-                        counter = 1
-                        while f"{unique_name}_{counter}" in inventory['_meta']['hostvars']:
-                            counter += 1
-                        unique_name = f"{unique_name}_{counter}"
+                # Check for hostname conflicts and resolve them
+                original_hostname = formatted_hostname
+                counter = 1
+                while formatted_hostname in inventory['_meta']['hostvars']:
+                    formatted_hostname = f"{original_hostname}-{counter}"
+                    counter += 1
+                    if counter > 100:  # Prevent infinite loop
+                        print(f"Warning: Too many hostname conflicts for {original_hostname}, using {formatted_hostname}", file=sys.stderr)
+                        break
                 
                 ip_address = self._get_instance_ip(instance, endpoint_config)
                 
                 # Add to main groups
-                groups['all']['hosts'].append(unique_name)
-                groups[endpoint_group_name]['hosts'].append(unique_name)
+                groups['all']['hosts'].append(formatted_hostname)
+                groups[endpoint_group_name]['hosts'].append(formatted_hostname)
                 
                 # Add to type-specific groups
                 if instance['type'] == 'container':
-                    groups['lxd_containers']['hosts'].append(unique_name)
+                    groups['lxd_containers']['hosts'].append(formatted_hostname)
                 elif instance['type'] == 'virtual-machine':
-                    groups['lxd_vms']['hosts'].append(unique_name)
+                    groups['lxd_vms']['hosts'].append(formatted_hostname)
                 
                 # Add to status-specific groups
                 status = instance['status'].lower()
                 if status == 'running':
-                    groups['lxd_running']['hosts'].append(unique_name)
+                    groups['lxd_running']['hosts'].append(formatted_hostname)
                 elif status == 'stopped':
-                    groups['lxd_stopped']['hosts'].append(unique_name)
+                    groups['lxd_stopped']['hosts'].append(formatted_hostname)
                 elif status == 'frozen':
-                    groups['lxd_frozen']['hosts'].append(unique_name)
+                    groups['lxd_frozen']['hosts'].append(formatted_hostname)
                 elif status == 'error':
-                    groups['lxd_error']['hosts'].append(unique_name)
+                    groups['lxd_error']['hosts'].append(formatted_hostname)
                 
                 # Create profile-based groups
                 for profile in instance.get('profiles', []):
                     group_name = f'lxd_profile_{profile}'
                     if group_name not in groups:
                         groups[group_name] = {'hosts': []}
-                    groups[group_name]['hosts'].append(unique_name)
+                    groups[group_name]['hosts'].append(formatted_hostname)
                 
                 # Create project-based groups
                 project = instance.get('lxd_project', 'default')
                 project_group_name = f'lxd_project_{project}'
                 if project_group_name not in groups:
                     groups[project_group_name] = {'hosts': []}
-                groups[project_group_name]['hosts'].append(unique_name)
+                groups[project_group_name]['hosts'].append(formatted_hostname)
                 
                 # Add host variables
                 hostvars = {
                     'lxd_name': name,
-                    'lxd_unique_name': unique_name,
+                    'lxd_hostname': formatted_hostname,
                     'lxd_type': instance['type'],
                     'lxd_status': instance['status'],
                     'lxd_architecture': instance['architecture'],
@@ -644,7 +669,7 @@ class LXDInventory:
                 if expanded_config:
                     hostvars['lxd_expanded_config'] = expanded_config
                 
-                inventory['_meta']['hostvars'][unique_name] = hostvars
+                inventory['_meta']['hostvars'][formatted_hostname] = hostvars
         
         # Remove empty groups
         groups = {k: v for k, v in groups.items() if v['hosts']}
@@ -656,28 +681,46 @@ class LXDInventory:
         """Get variables for a specific instance in Ansible dynamic inventory format."""
         inventory = self._generate_inventory()
         
-        # Look for exact match first
+        # Look for exact hostname match first
         if instance_name in inventory['_meta']['hostvars']:
             instance_vars = inventory['_meta']['hostvars'][instance_name]
-        else:
-            # Look for partial matches (original name without endpoint prefix)
-            instance_vars = {}
-            for host_name, host_vars in inventory['_meta']['hostvars'].items():
-                if host_vars.get('lxd_name') == instance_name:
-                    instance_vars = host_vars
-                    break
-        
-        if not instance_vars:
-            return {}
-        
-        # Return in the same format as --list but for just this instance
-        return {
-            "_meta": {
-                "hostvars": {
-                    instance_name: instance_vars
+            return {
+                "_meta": {
+                    "hostvars": {
+                        instance_name: instance_vars
+                    }
                 }
             }
-        }
+        
+        # Look for matches by original LXD name
+        matching_hosts = {}
+        for host_name, host_vars in inventory['_meta']['hostvars'].items():
+            if host_vars.get('lxd_name') == instance_name:
+                matching_hosts[host_name] = host_vars
+        
+        if len(matching_hosts) == 1:
+            # Single match found - return it with the formatted hostname
+            host_name, host_vars = next(iter(matching_hosts.items()))
+            return {
+                "_meta": {
+                    "hostvars": {
+                        host_name: host_vars
+                    }
+                }
+            }
+        elif len(matching_hosts) > 1:
+            # Multiple matches - return all with formatted hostnames
+            print(f"Warning: Multiple instances found with name '{instance_name}':", file=sys.stderr)
+            for host_name, host_vars in matching_hosts.items():
+                print(f"  - {host_name} (project: {host_vars.get('lxd_project', 'default')}, endpoint: {host_vars.get('lxd_endpoint', 'unknown')})", file=sys.stderr)
+            return {
+                "_meta": {
+                    "hostvars": matching_hosts
+                }
+            }
+        
+        # No matches found
+        return {}
     
     def list_inventory(self) -> str:
         """Return the full inventory as JSON."""

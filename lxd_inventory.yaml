@@ -10,6 +10,16 @@ global_defaults:
   key_path: "/home/user/.config/lxc/client.key"     # Default client private key  
   ca_cert_path: "/home/user/.config/lxc/ca.crt"     # Default CA certificate (optional)
   
+  # Hostname formatting template - defines how hostnames appear in inventory
+  # Available variables: {name}, {project}, {endpoint}, {type}, {status}
+  # Examples:
+  #   "{name}"                           -> "monitoring" (default, backwards compatible)
+  #   "{name}.{project}"                 -> "monitoring.production"
+  #   "{name}.{project}.{endpoint}"      -> "monitoring.production.prod"
+  #   "{name}-{project}-{endpoint}"      -> "monitoring-production-prod"
+  #   "{endpoint}-{project}-{name}"      -> "prod-production-monitoring"
+  hostname_format: "{name}"
+  
   # Default filters that apply to all endpoints
   filters:
     # Instance status filter - which statuses to include
@@ -53,7 +63,9 @@ lxd_endpoints:
     endpoint: "https://lxd-prod.example.com:8443"
     # Uses global cert/key/ca settings by default
     verify_ssl: true  # Override global default for production
-    host_prefix: "prod"  # Optional: custom prefix for host names (defaults to endpoint name)
+    
+    # Override hostname format for this endpoint
+    hostname_format: "{name}.{project}.prod.example.com"
     
     # Endpoint-specific filters (override global defaults)
     filters:
@@ -71,7 +83,9 @@ lxd_endpoints:
     cert_path: "/etc/ssl/lxd-dev-client.crt"
     key_path: "/etc/ssl/lxd-dev-client.key"
     ca_cert_path: "/etc/ssl/lxd-dev-ca.crt"
-    host_prefix: "dev"
+    
+    # Different hostname format for development
+    hostname_format: "{name}.{project}.dev.example.com"
     
     filters:
       projects:
@@ -85,10 +99,23 @@ lxd_endpoints:
 
 # Advanced configuration examples:
 
+# Your preferred naming scheme:
+# global_defaults:
+#   hostname_format: "{name}.{project}.{endpoint}.example.com"
+
+# Simple project-based naming:
+# global_defaults:
+#   hostname_format: "{name}.{project}"
+
+# Endpoint-project-name pattern:
+# global_defaults:
+#   hostname_format: "{endpoint}-{project}-{name}"
+
 # IPv6-only environment:
 # lxd_endpoints:
 #   ipv6_cluster:
 #     endpoint: "https://[2001:db8::1]:8443"
+#     hostname_format: "{name}.{project}.ipv6"
 #     filters:
 #       prefer_ipv6: true
 #       ignore_interfaces: [lo, docker0]
@@ -97,7 +124,7 @@ lxd_endpoints:
 # lxd_endpoints:
 #   local:
 #     endpoint: "unix:///var/lib/lxd/unix.socket"
-#     host_prefix: "local"
+#     hostname_format: "{name}.{project}.local"
 #     filters:
 #       projects: [development, testing]
 

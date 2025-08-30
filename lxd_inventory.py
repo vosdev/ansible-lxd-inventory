@@ -142,7 +142,9 @@ class LXDInventory:
         
         # Status filter
         if self.args and self.args.status:
-            filters['status'] = [self.args.status]
+            # Support comma-separated statuses
+            cli_statuses = [s.strip().lower() for s in self.args.status.split(',')]
+            filters['status'] = cli_statuses
         elif 'status' in endpoint_filters:
             status = endpoint_filters['status']
             filters['status'] = status if isinstance(status, list) else status.split(',')
@@ -737,8 +739,8 @@ def main():
     parser.add_argument('--host', help='LXD host/cluster to connect to (overrides config and filters to single endpoint)')
     
     # Filtering arguments (these apply to all endpoints when using multi-endpoint config)
-    parser.add_argument('--status', choices=['running', 'stopped', 'frozen', 'error'], 
-                       help='Filter by instance status (applies to all endpoints)')
+    parser.add_argument('--status', 
+                       help='Filter by instance status - comma separated (e.g. running,stopped) (applies to all endpoints)')
     parser.add_argument('--type', help='Filter by type (vm,lxc) - comma separated (applies to all endpoints)')
     parser.add_argument('--project', help='Filter by project(s) - comma separated (applies to all endpoints)')
     parser.add_argument('--all-projects', action='store_true', 

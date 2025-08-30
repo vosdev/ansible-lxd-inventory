@@ -68,26 +68,21 @@ class LXDInventory:
             processed_endpoint = self._process_endpoint_config(endpoint_name, endpoint_config, config['global_defaults'])
             config['endpoints'][endpoint_name] = processed_endpoint
         
-        # If CLI --host is specified, filter to only that endpoint or add it
-        if self.args and self.args.host:
-            host = self.args.host
-            if not host.startswith(('http://', 'https://', 'unix://')):
-                host = f"https://{host}:8443"
+        # If CLI --endpoint is specified, filter to only that endpoint
+        if self.args and self.args.endpoint:
+            endpoint_name = self.args.endpoint
             
-            # Check if this matches any existing endpoint
-            matching_endpoint = None
-            for name, endpoint in config['endpoints'].items():
-                if endpoint['endpoint'] == host:
-                    matching_endpoint = name
-                    break
-            
-            if matching_endpoint:
-                # Filter to only the matching endpoint
-                config['endpoints'] = {matching_endpoint: config['endpoints'][matching_endpoint]}
+            if endpoint_name in config['endpoints']:
+                # Filter to only the specified endpoint
+                config['endpoints'] = {endpoint_name: config['endpoints'][endpoint_name]}
+                if self.debug:
+                    print(f"Debug: Filtered to endpoint '{endpoint_name}' from config", file=sys.stderr)
             else:
-                # Add as a new endpoint
-                temp_endpoint = {'endpoint': host}
-                config['endpoints'] = {'cli_host': self._process_endpoint_config('cli_host', temp_endpoint, config['global_defaults'])}
+                # Endpoint not found in config
+                available_endpoints = list(config['endpoints'].keys())
+                print(f"Error: Endpoint '{endpoint_name}' not found in configuration", file=sys.stderr)
+                print(f"Available endpoints: {', '.join(available_endpoints)}", file=sys.stderr)
+                sys.exit(1)
         
         return config
     
@@ -108,11 +103,10 @@ class LXDInventory:
         
         # Determine endpoint from CLI or default
         endpoint = 'unix:///var/lib/lxd/unix.socket'
-        if self.args and self.args.host:
-            host = self.args.host
-            if not host.startswith(('http://', 'https://', 'unix://')):
-                host = f"https://{host}:8443"
-            endpoint = host
+        if self.args and self.args.endpoint:
+            # With new --endpoint behavior, this shouldn't happen since we expect 
+            # endpoint names from config, but keep fallback for edge cases
+            print("Warning: --endpoint specified but no config file found. Using default endpoint.", file=sys.stderr)
         
         endpoint_config = {'endpoint': endpoint}
         
@@ -736,7 +730,7 @@ def main():
     parser.add_argument('--yaml', action='store_true', help='Output in YAML format')
     
     # LXD connection
-    parser.add_argument('--host', help='LXD host/cluster to connect to (overrides config and filters to single endpoint)')
+    parser.add_argument('--endpoint', help='Filter to a specific endpoint from config file (e.g., production, development)')
     
     # Filtering arguments (these apply to all endpoints when using multi-endpoint config)
     parser.add_argument('--status', 

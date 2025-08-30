@@ -1,0 +1,92 @@
+# LXD Inventory Configuration File
+# This file provides default settings for the LXD Ansible dynamic inventory script
+# CLI arguments will override these settings when provided
+
+# LXD Connection Settings
+endpoint: "unix:///var/lib/lxd/unix.socket"  # or "https://lxd-host:8443"
+cert_path: "/path/to/client.crt"           # Client certificate (for remote connections)
+key_path: "/path/to/client.key"            # Client private key (for remote connections)  
+ca_cert_path: "/path/to/ca.crt"            # CA certificate (for remote connections)
+verify_ssl: false                          # Whether to verify SSL certificates
+
+# Default Filters
+filters:
+  # Instance status filter - which statuses to include
+  status:
+    - running
+    - stopped  
+    - frozen
+    - error
+    # Or use string format: "running,stopped,frozen,error"
+  
+  # Instance type filter
+  type:
+    - container
+    - virtual-machine
+    # Or use string format: "container,virtual-machine"
+  
+  # Project filter - specify projects to include or use "all"
+  projects:
+    - default
+    - homelab
+    - production
+    # Or use "all" to include all projects
+    # Or use string format: "default,homelab,production"
+  
+  # Profile filter - only include instances with these profiles (optional)
+  profiles:
+    - web
+    - database
+    # Or use string format: "web,database"
+    # Leave empty or comment out to include all profiles
+  
+  # Network interfaces to ignore when finding IP addresses
+  ignore_interfaces:
+    - lo
+    - docker0
+    - cilium_host
+    - cilium_vxlan
+    - cilium_net
+    - lxdbr0
+    # Or use string format: "lo,docker0,cilium_host,cilium_vxlan,cilium_net"
+  
+  # IPv6 preference - set to true to prefer IPv6 addresses over IPv4
+  prefer_ipv6: true
+  
+  # Instance names to exclude (optional)
+  exclude_names:
+    - template
+    - backup
+    - test-instance
+    # Or use string format: "template,backup,test-instance"
+
+# Example configurations for different environments:
+
+# Multi-host setup (create separate config files):
+# production.yml:
+# endpoint: "https://lxd-prod.example.com:8443"
+# cert_path: "/etc/ssl/lxd-prod-client.crt" 
+# key_path: "/etc/ssl/lxd-prod-client.key"
+# filters:
+#   projects: ["production", "staging"]
+#   
+# development.yml:
+# endpoint: "https://lxd-dev.example.com:8443"
+# cert_path: "/etc/ssl/lxd-dev-client.crt"
+# key_path: "/etc/ssl/lxd-dev-client.key"
+# filters:
+#   projects: ["development", "testing"]
+
+# IPv6-only environment:
+# filters:
+#   prefer_ipv6: true
+#   ignore_interfaces:
+#     - lo
+#     - docker0
+#     - cilium_host
+#     - cilium_vxlan
+#     - cilium_net
+
+# Minimal config (using mostly defaults):
+# endpoint: "https://my-lxd-host:8443"
+# verify_ssl: false

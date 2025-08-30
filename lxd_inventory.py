@@ -7,15 +7,19 @@ based on containers and VMs with configurable filtering.
 
 Usage:
     python lxd_inventory.py --list
-    python lxd_inventory.py --host <hostname>
+    python lxd_inventory.py --instance <instancename>
 
 Configuration:
-    Set environment variables or modify the configuration section below:
-    - LXD_ENDPOINT: LXD server endpoint (default: unix socket)
-    - LXD_CERT_PATH: Path to client certificate
-    - LXD_KEY_PATH: Path to client private key
-    - LXD_CA_CERT_PATH: Path to CA certificate
-    - LXD_VERIFY_SSL: Whether to verify SSL certificates
+    Create a YAML configuration file (lxd_inventory.yml) or specify with --config.
+    The script looks for config files in this order:
+    - ./lxd_inventory.yml
+    - ./lxd_inventory.yaml  
+    - ~/.config/lxd_inventory.yml
+    - ~/.config/lxd_inventory.yaml
+    - /etc/lxd_inventory.yml
+    - /etc/lxd_inventory.yaml
+    
+    CLI arguments override YAML configuration settings.
 """
 
 import argparse
@@ -41,15 +45,19 @@ class LXDInventory:
         self.session = self._create_session()
         
     def _load_config(self) -> Dict[str, Any]:
-        """Load configuration from environment variables, CLI args, or defaults."""
+        """Load configuration from YAML file and CLI args, with defaults."""
+        # Load from YAML config file first
+        config_data = self._load_yaml_config()
+        
+        # Base configuration
         config = {
-            'verify_ssl': os.getenv('LXD_VERIFY_SSL', 'false').lower() == 'true',
-            'cert_path': os.getenv('LXD_CERT_PATH'),
-            'key_path': os.getenv('LXD_KEY_PATH'),
-            'ca_cert_path': os.getenv('LXD_CA_CERT_PATH'),
+            'verify_ssl': config_data.get('verify_ssl', False),
+            'cert_path': config_data.get('cert_path'),
+            'key_path': config_data.get('key_path'),
+            'ca_cert_path': config_data.get('ca_cert_path'),
         }
         
-        # LXD endpoint/host - CLI --host takes precedence
+        # LXD endpoint/host - CLI --host takes precedence, then config file, then default
         if self.args and self.args.host:
             # If --host is provided, construct the endpoint
             host = self.args.host
@@ -58,17 +66,20 @@ class LXDInventory:
                 host = f"https://{host}:8443"
             config['endpoint'] = host
         else:
-            config['endpoint'] = os.getenv('LXD_ENDPOINT', 'unix:///var/lib/lxd/unix.socket')
+            config['endpoint'] = config_data.get('endpoint', 'unix:///var/lib/lxd/unix.socket')
         
-        # Handle filters with CLI args taking precedence
+        # Handle filters with CLI args taking precedence, then config file, then defaults
         filters = {}
         
         # Status filter
         if self.args and self.args.status:
             filters['status'] = [self.args.status]
         else:
-            env_status = os.getenv('LXD_FILTER_STATUS', 'running,stopped,frozen,error')
-            filters['status'] = env_status.split(',') if env_status else ['running', 'stopped', 'frozen', 'error']
+            config_status = config_data.get('filters', {}).get('status')
+            if config_status:
+                filters['status'] = config_status if isinstance(config_status, list) else config_status.split(',')
+            else:
+                filters['status'] = ['running', 'stopped', 'frozen', 'error']
         
         # Type filter - map CLI args to LXD types
         if self.args and self.args.type:
@@ -76,8 +87,11 @@ class LXDInventory:
             cli_types = [t.strip() for t in self.args.type.split(',')]
             filters['type'] = [type_map.get(t, t) for t in cli_types]
         else:
-            env_types = os.getenv('LXD_FILTER_TYPE', 'container,virtual-machine').split(',')
-            filters['type'] = env_types
+            config_types = config_data.get('filters', {}).get('type')
+            if config_types:
+                filters['type'] = config_types if isinstance(config_types, list) else config_types.split(',')
+            else:
+                filters['type'] = ['container', 'virtual-machine']
         
         # Project filter
         if self.args and self.args.all_projects:
@@ -85,34 +99,103 @@ class LXDInventory:
         elif self.args and self.args.project:
             filters['projects'] = [p.strip() for p in self.args.project.split(',')]
         else:
-            env_project = os.getenv('LXD_FILTER_PROJECT', 'default')
-            filters['projects'] = [env_project] if env_project else ['default']
+            config_projects = config_data.get('filters', {}).get('projects')
+            if config_projects:
+                if 'all' in config_projects or config_projects == 'all':
+                    filters['projects'] = ['all']
+                else:
+                    filters['projects'] = config_projects if isinstance(config_projects, list) else config_projects.split(',')
+            else:
+                filters['projects'] = ['default']
         
         # Profile filter
         if self.args and self.args.profile:
             filters['profiles'] = [p.strip() for p in self.args.profile.split(',')]
         else:
-            env_profiles = os.getenv('LXD_FILTER_PROFILES', '')
-            filters['profiles'] = env_profiles.split(',') if env_profiles else []
+            config_profiles = config_data.get('filters', {}).get('profiles')
+            if config_profiles:
+                filters['profiles'] = config_profiles if isinstance(config_profiles, list) else config_profiles.split(',')
+            else:
+                filters['profiles'] = []
         
         # Ignore interfaces filter
         if self.args and self.args.ignore_interface:
             filters['ignore_interfaces'] = [i.strip() for i in self.args.ignore_interface.split(',')]
         else:
-            env_ignore = os.getenv('LXD_IGNORE_INTERFACES', 'lo,docker0,cilium_host,cilium_vxlan,cilium_net')
-            filters['ignore_interfaces'] = env_ignore.split(',') if env_ignore else ['lo']
+            config_ignore = config_data.get('filters', {}).get('ignore_interfaces')
+            if config_ignore:
+                filters['ignore_interfaces'] = config_ignore if isinstance(config_ignore, list) else config_ignore.split(',')
+            else:
+                filters['ignore_interfaces'] = ['lo', 'docker0', 'cilium_host', 'cilium_vxlan', 'cilium_net']
         
         # IPv6 preference
         if self.args and self.args.prefer_ipv6:
             filters['prefer_ipv6'] = True
         else:
-            filters['prefer_ipv6'] = os.getenv('LXD_PREFER_IPV6', 'false').lower() == 'true'
+            config_ipv6 = config_data.get('filters', {}).get('prefer_ipv6')
+            if config_ipv6 is not None:
+                filters['prefer_ipv6'] = config_ipv6
+            else:
+                filters['prefer_ipv6'] = False
         
-        # Exclude names (only from env for now)
-        filters['exclude_names'] = os.getenv('LXD_EXCLUDE_NAMES', '').split(',') if os.getenv('LXD_EXCLUDE_NAMES') else []
+        # Exclude names - from config file only
+        config_exclude = config_data.get('filters', {}).get('exclude_names')
+        if config_exclude:
+            filters['exclude_names'] = config_exclude if isinstance(config_exclude, list) else config_exclude.split(',')
+        else:
+            filters['exclude_names'] = []
         
         config['filters'] = filters
         return config
+    
+    def _load_yaml_config(self) -> Dict[str, Any]:
+        """Load configuration from YAML file."""
+        config_file = None
+        
+        # Check CLI argument first
+        if self.args and self.args.config:
+            config_file = self.args.config
+        else:
+            # Look for default config files in order of preference
+            default_locations = [
+                './lxd_inventory.yml',
+                './lxd_inventory.yaml',
+                '~/.config/lxd_inventory.yml',
+                '~/.config/lxd_inventory.yaml',
+                '/etc/lxd_inventory.yml',
+                '/etc/lxd_inventory.yaml'
+            ]
+            
+            for location in default_locations:
+                expanded_path = os.path.expanduser(location)
+                if os.path.exists(expanded_path) and os.path.isfile(expanded_path):
+                    config_file = expanded_path
+                    if self.debug:
+                        print(f"Debug: Using config file: {config_file}", file=sys.stderr)
+                    break
+        
+        if not config_file:
+            if self.debug:
+                print("Debug: No config file found, using defaults", file=sys.stderr)
+            return {}
+        
+        try:
+            with open(config_file, 'r') as f:
+                config_data = yaml.safe_load(f) or {}
+                if self.debug:
+                    print(f"Debug: Loaded config from {config_file}", file=sys.stderr)
+                return config_data
+        except FileNotFoundError:
+            if self.args and self.args.config:
+                print(f"Error: Config file '{config_file}' not found", file=sys.stderr)
+                sys.exit(1)
+            return {}
+        except yaml.YAMLError as e:
+            print(f"Error parsing config file '{config_file}': {e}", file=sys.stderr)
+            sys.exit(1)
+        except Exception as e:
+            print(f"Error loading config file '{config_file}': {e}", file=sys.stderr)
+            sys.exit(1)
     
     def _create_session(self) -> requests.Session:
         """Create a requests session with appropriate configuration."""
@@ -465,6 +548,7 @@ def main():
     parser.add_argument('--ignore-interface', help='Interfaces to ignore when finding IP (comma separated)')
     parser.add_argument('--prefer-ipv6', action='store_true', 
                        help='Prefer IPv6 addresses over IPv4 for ansible_host')
+    parser.add_argument('--config', help='Path to YAML configuration file (default: ./lxd_inventory.yml)')
     parser.add_argument('--debug', action='store_true', 
                        help='Enable debug output')
     

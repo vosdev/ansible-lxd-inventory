@@ -68,21 +68,32 @@ class LXDInventory:
             processed_endpoint = self._process_endpoint_config(endpoint_name, endpoint_config, config['global_defaults'])
             config['endpoints'][endpoint_name] = processed_endpoint
         
-        # If CLI --endpoint is specified, filter to only that endpoint
+        # If CLI --endpoint is specified, filter to only those endpoints
         if self.args and self.args.endpoint:
-            endpoint_name = self.args.endpoint
+            # Parse comma-separated endpoint names
+            requested_endpoints = [name.strip() for name in self.args.endpoint.split(',')]
+            available_endpoints = list(config['endpoints'].keys())
             
-            if endpoint_name in config['endpoints']:
-                # Filter to only the specified endpoint
-                config['endpoints'] = {endpoint_name: config['endpoints'][endpoint_name]}
-                if self.debug:
-                    print(f"Debug: Filtered to endpoint '{endpoint_name}' from config", file=sys.stderr)
-            else:
-                # Endpoint not found in config
-                available_endpoints = list(config['endpoints'].keys())
-                print(f"Error: Endpoint '{endpoint_name}' not found in configuration", file=sys.stderr)
+            # Validate that all requested endpoints exist
+            missing_endpoints = []
+            for endpoint_name in requested_endpoints:
+                if endpoint_name not in config['endpoints']:
+                    missing_endpoints.append(endpoint_name)
+            
+            if missing_endpoints:
+                print(f"Error: Endpoint(s) not found in configuration: {', '.join(missing_endpoints)}", file=sys.stderr)
                 print(f"Available endpoints: {', '.join(available_endpoints)}", file=sys.stderr)
                 sys.exit(1)
+            
+            # Filter to only the specified endpoints
+            filtered_endpoints = {}
+            for endpoint_name in requested_endpoints:
+                filtered_endpoints[endpoint_name] = config['endpoints'][endpoint_name]
+            
+            config['endpoints'] = filtered_endpoints
+            
+            if self.debug:
+                print(f"Debug: Filtered to endpoints: {', '.join(requested_endpoints)}", file=sys.stderr)
         
         return config
     
@@ -730,7 +741,7 @@ def main():
     parser.add_argument('--yaml', action='store_true', help='Output in YAML format')
     
     # LXD connection
-    parser.add_argument('--endpoint', help='Filter to a specific endpoint from config file (e.g., production, development)')
+    parser.add_argument('--endpoint', help='Filter to specific endpoint(s) from config file - comma separated (e.g., production,development)')
     
     # Filtering arguments (these apply to all endpoints when using multi-endpoint config)
     parser.add_argument('--status', 

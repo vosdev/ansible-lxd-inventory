@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-LXD Ansible Dynamic Inventory Script
+LXD Ansible Dynamic Inventory Script with Multi-Endpoint Support
 
-This script connects to an LXD server and generates Ansible inventory
-based on containers and VMs with configurable filtering.
+This script connects to multiple LXD servers and generates Ansible inventory
+based on containers and VMs with configurable filtering per endpoint.
 
 Usage:
     python lxd_inventory.py --list
@@ -42,106 +42,190 @@ class LXDInventory:
         self.args = args
         self.debug = args and args.debug
         self.config = self._load_config()
-        self.session = self._create_session()
         
     def _load_config(self) -> Dict[str, Any]:
         """Load configuration from YAML file and CLI args, with defaults."""
         # Load from YAML config file first
         config_data = self._load_yaml_config()
         
-        # Base configuration
+        # Check if we're using multi-endpoint format
+        if 'lxd_endpoints' in config_data:
+            # Multi-endpoint format
+            return self._process_multi_endpoint_config(config_data)
+        else:
+            # No config file or empty - use defaults
+            return self._get_default_config()
+    
+    def _process_multi_endpoint_config(self, config_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Process multi-endpoint configuration format."""
         config = {
-            'verify_ssl': config_data.get('verify_ssl', False),
-            'cert_path': config_data.get('cert_path'),
-            'key_path': config_data.get('key_path'),
-            'ca_cert_path': config_data.get('ca_cert_path'),
+            'global_defaults': config_data.get('global_defaults', {}),
+            'endpoints': {}
         }
         
-        # LXD endpoint/host - CLI --host takes precedence, then config file, then default
+        # Process each endpoint
+        for endpoint_name, endpoint_config in config_data.get('lxd_endpoints', {}).items():
+            processed_endpoint = self._process_endpoint_config(endpoint_name, endpoint_config, config['global_defaults'])
+            config['endpoints'][endpoint_name] = processed_endpoint
+        
+        # If CLI --host is specified, filter to only that endpoint or add it
         if self.args and self.args.host:
-            # If --host is provided, construct the endpoint
             host = self.args.host
             if not host.startswith(('http://', 'https://', 'unix://')):
-                # Default to https if no protocol specified
                 host = f"https://{host}:8443"
-            config['endpoint'] = host
-        else:
-            config['endpoint'] = config_data.get('endpoint', 'unix:///var/lib/lxd/unix.socket')
+            
+            # Check if this matches any existing endpoint
+            matching_endpoint = None
+            for name, endpoint in config['endpoints'].items():
+                if endpoint['endpoint'] == host:
+                    matching_endpoint = name
+                    break
+            
+            if matching_endpoint:
+                # Filter to only the matching endpoint
+                config['endpoints'] = {matching_endpoint: config['endpoints'][matching_endpoint]}
+            else:
+                # Add as a new endpoint
+                temp_endpoint = {'endpoint': host}
+                config['endpoints'] = {'cli_host': self._process_endpoint_config('cli_host', temp_endpoint, config['global_defaults'])}
         
-        # Handle filters with CLI args taking precedence, then config file, then defaults
+        return config
+    
+    def _get_default_config(self) -> Dict[str, Any]:
+        """Get default configuration when no config file exists."""
+        global_defaults = {
+            'verify_ssl': False,
+            'filters': {
+                'status': ['running', 'stopped', 'frozen', 'error'],
+                'type': ['container', 'virtual-machine'],
+                'projects': ['default'],
+                'profiles': [],
+                'ignore_interfaces': ['lo', 'docker0', 'cilium_host', 'cilium_vxlan', 'cilium_net'],
+                'prefer_ipv6': False,
+                'exclude_names': []
+            }
+        }
+        
+        # Determine endpoint from CLI or default
+        endpoint = 'unix:///var/lib/lxd/unix.socket'
+        if self.args and self.args.host:
+            host = self.args.host
+            if not host.startswith(('http://', 'https://', 'unix://')):
+                host = f"https://{host}:8443"
+            endpoint = host
+        
+        endpoint_config = {'endpoint': endpoint}
+        
+        return {
+            'global_defaults': global_defaults,
+            'endpoints': {
+                'default': self._process_endpoint_config('default', endpoint_config, global_defaults)
+            }
+        }
+    
+    def _process_endpoint_config(self, endpoint_name: str, endpoint_config: Dict[str, Any], global_defaults: Dict[str, Any]) -> Dict[str, Any]:
+        """Process configuration for a single endpoint, merging with global defaults and CLI args."""
+        config = {
+            'name': endpoint_name,
+            'endpoint': endpoint_config.get('endpoint', 'unix:///var/lib/lxd/unix.socket'),
+            'verify_ssl': endpoint_config.get('verify_ssl', global_defaults.get('verify_ssl', False)),
+            'cert_path': endpoint_config.get('cert_path', global_defaults.get('cert_path')),
+            'key_path': endpoint_config.get('key_path', global_defaults.get('key_path')),
+            'ca_cert_path': endpoint_config.get('ca_cert_path', global_defaults.get('ca_cert_path')),
+        }
+        
+        # Merge filters: global defaults < endpoint config < CLI args
         filters = {}
+        global_filters = global_defaults.get('filters', {})
+        endpoint_filters = endpoint_config.get('filters', {})
         
         # Status filter
         if self.args and self.args.status:
             filters['status'] = [self.args.status]
+        elif 'status' in endpoint_filters:
+            status = endpoint_filters['status']
+            filters['status'] = status if isinstance(status, list) else status.split(',')
+        elif 'status' in global_filters:
+            status = global_filters['status']
+            filters['status'] = status if isinstance(status, list) else status.split(',')
         else:
-            config_status = config_data.get('filters', {}).get('status')
-            if config_status:
-                filters['status'] = config_status if isinstance(config_status, list) else config_status.split(',')
-            else:
-                filters['status'] = ['running', 'stopped', 'frozen', 'error']
+            filters['status'] = ['running', 'stopped', 'frozen', 'error']
         
-        # Type filter - map CLI args to LXD types
+        # Type filter
         if self.args and self.args.type:
             type_map = {'vm': 'virtual-machine', 'lxc': 'container'}
             cli_types = [t.strip() for t in self.args.type.split(',')]
             filters['type'] = [type_map.get(t, t) for t in cli_types]
+        elif 'type' in endpoint_filters:
+            type_filter = endpoint_filters['type']
+            filters['type'] = type_filter if isinstance(type_filter, list) else type_filter.split(',')
+        elif 'type' in global_filters:
+            type_filter = global_filters['type']
+            filters['type'] = type_filter if isinstance(type_filter, list) else type_filter.split(',')
         else:
-            config_types = config_data.get('filters', {}).get('type')
-            if config_types:
-                filters['type'] = config_types if isinstance(config_types, list) else config_types.split(',')
-            else:
-                filters['type'] = ['container', 'virtual-machine']
+            filters['type'] = ['container', 'virtual-machine']
         
         # Project filter
         if self.args and self.args.all_projects:
             filters['projects'] = ['all']
         elif self.args and self.args.project:
             filters['projects'] = [p.strip() for p in self.args.project.split(',')]
-        else:
-            config_projects = config_data.get('filters', {}).get('projects')
-            if config_projects:
-                if 'all' in config_projects or config_projects == 'all':
-                    filters['projects'] = ['all']
-                else:
-                    filters['projects'] = config_projects if isinstance(config_projects, list) else config_projects.split(',')
+        elif 'projects' in endpoint_filters:
+            projects = endpoint_filters['projects']
+            if projects == 'all' or 'all' in projects:
+                filters['projects'] = ['all']
             else:
-                filters['projects'] = ['default']
+                filters['projects'] = projects if isinstance(projects, list) else projects.split(',')
+        elif 'projects' in global_filters:
+            projects = global_filters['projects']
+            if projects == 'all' or 'all' in projects:
+                filters['projects'] = ['all']
+            else:
+                filters['projects'] = projects if isinstance(projects, list) else projects.split(',')
+        else:
+            filters['projects'] = ['default']
         
         # Profile filter
         if self.args and self.args.profile:
             filters['profiles'] = [p.strip() for p in self.args.profile.split(',')]
+        elif 'profiles' in endpoint_filters:
+            profiles = endpoint_filters['profiles']
+            filters['profiles'] = profiles if isinstance(profiles, list) else profiles.split(',')
+        elif 'profiles' in global_filters:
+            profiles = global_filters['profiles']
+            filters['profiles'] = profiles if isinstance(profiles, list) else profiles.split(',')
         else:
-            config_profiles = config_data.get('filters', {}).get('profiles')
-            if config_profiles:
-                filters['profiles'] = config_profiles if isinstance(config_profiles, list) else config_profiles.split(',')
-            else:
-                filters['profiles'] = []
+            filters['profiles'] = []
         
         # Ignore interfaces filter
         if self.args and self.args.ignore_interface:
             filters['ignore_interfaces'] = [i.strip() for i in self.args.ignore_interface.split(',')]
+        elif 'ignore_interfaces' in endpoint_filters:
+            ignore = endpoint_filters['ignore_interfaces']
+            filters['ignore_interfaces'] = ignore if isinstance(ignore, list) else ignore.split(',')
+        elif 'ignore_interfaces' in global_filters:
+            ignore = global_filters['ignore_interfaces']
+            filters['ignore_interfaces'] = ignore if isinstance(ignore, list) else ignore.split(',')
         else:
-            config_ignore = config_data.get('filters', {}).get('ignore_interfaces')
-            if config_ignore:
-                filters['ignore_interfaces'] = config_ignore if isinstance(config_ignore, list) else config_ignore.split(',')
-            else:
-                filters['ignore_interfaces'] = ['lo', 'docker0', 'cilium_host', 'cilium_vxlan', 'cilium_net']
+            filters['ignore_interfaces'] = ['lo', 'docker0', 'cilium_host', 'cilium_vxlan', 'cilium_net']
         
         # IPv6 preference
         if self.args and self.args.prefer_ipv6:
             filters['prefer_ipv6'] = True
+        elif 'prefer_ipv6' in endpoint_filters:
+            filters['prefer_ipv6'] = endpoint_filters['prefer_ipv6']
+        elif 'prefer_ipv6' in global_filters:
+            filters['prefer_ipv6'] = global_filters['prefer_ipv6']
         else:
-            config_ipv6 = config_data.get('filters', {}).get('prefer_ipv6')
-            if config_ipv6 is not None:
-                filters['prefer_ipv6'] = config_ipv6
-            else:
-                filters['prefer_ipv6'] = False
+            filters['prefer_ipv6'] = False
         
         # Exclude names - from config file only
-        config_exclude = config_data.get('filters', {}).get('exclude_names')
-        if config_exclude:
-            filters['exclude_names'] = config_exclude if isinstance(config_exclude, list) else config_exclude.split(',')
+        if 'exclude_names' in endpoint_filters:
+            exclude = endpoint_filters['exclude_names']
+            filters['exclude_names'] = exclude if isinstance(exclude, list) else exclude.split(',')
+        elif 'exclude_names' in global_filters:
+            exclude = global_filters['exclude_names']
+            filters['exclude_names'] = exclude if isinstance(exclude, list) else exclude.split(',')
         else:
             filters['exclude_names'] = []
         
@@ -197,8 +281,8 @@ class LXDInventory:
             print(f"Error loading config file '{config_file}': {e}", file=sys.stderr)
             sys.exit(1)
     
-    def _create_session(self) -> requests.Session:
-        """Create a requests session with appropriate configuration."""
+    def _create_session(self, endpoint_config: Dict[str, Any]) -> requests.Session:
+        """Create a requests session with appropriate configuration for an endpoint."""
         session = requests.Session()
         
         # Configure retries
@@ -212,27 +296,32 @@ class LXDInventory:
         session.mount("https://", adapter)
         
         # Configure SSL/TLS
-        if self.config['cert_path'] and self.config['key_path']:
-            session.cert = (self.config['cert_path'], self.config['key_path'])
+        if endpoint_config['cert_path'] and endpoint_config['key_path']:
+            session.cert = (endpoint_config['cert_path'], endpoint_config['key_path'])
         
-        if self.config['ca_cert_path']:
-            session.verify = self.config['ca_cert_path']
+        if endpoint_config['ca_cert_path']:
+            session.verify = endpoint_config['ca_cert_path']
         else:
-            session.verify = self.config['verify_ssl']
+            session.verify = endpoint_config['verify_ssl']
         
         return session
     
-    def _make_request(self, path: str) -> Dict[str, Any]:
-        """Make a request to the LXD API."""
-        if self.config['endpoint'].startswith('unix://'):
+    def _make_request(self, endpoint_config: Dict[str, Any], path: str) -> Dict[str, Any]:
+        """Make a request to the LXD API for a specific endpoint."""
+        if endpoint_config['endpoint'].startswith('unix://'):
             # Unix socket connection
-            import requests_unixsocket
-            session = requests_unixsocket.Session()
-            url = self.config['endpoint'].replace('unix://', 'http+unix://') + '/1.0' + path
+            try:
+                import requests_unixsocket
+                session = requests_unixsocket.Session()
+                url = endpoint_config['endpoint'].replace('unix://', 'http+unix://') + '/1.0' + path
+            except ImportError:
+                print(f"Error: requests-unixsocket package is required for Unix socket connections", file=sys.stderr)
+                print(f"Install with: pip install requests-unixsocket", file=sys.stderr)
+                sys.exit(1)
         else:
             # HTTP/HTTPS connection
-            session = self.session
-            url = f"{self.config['endpoint']}/1.0{path}"
+            session = self._create_session(endpoint_config)
+            url = f"{endpoint_config['endpoint']}/1.0{path}"
         
         try:
             response = session.get(url)
@@ -244,25 +333,33 @@ class LXDInventory:
             
             return data.get('metadata', {})
         except requests.exceptions.RequestException as e:
-            print(f"Error connecting to LXD: {e}", file=sys.stderr)
-            sys.exit(1)
+            print(f"Error connecting to LXD endpoint '{endpoint_config['name']}' at {endpoint_config['endpoint']}: {e}", file=sys.stderr)
+            return {}
         except Exception as e:
-            print(f"Error: {e}", file=sys.stderr)
-            sys.exit(1)
+            print(f"Error with LXD endpoint '{endpoint_config['name']}': {e}", file=sys.stderr)
+            return {}
     
-    def _get_instances(self) -> List[Dict[str, Any]]:
-        """Get all instances from LXD with detailed information."""
+    def _get_instances(self, endpoint_config: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Get all instances from a specific LXD endpoint with detailed information."""
         all_instances = []
-        projects = self.config['filters']['projects']
+        projects = endpoint_config['filters']['projects']
+        endpoint_name = endpoint_config['name']
+        
+        if self.debug:
+            print(f"Debug: Fetching instances from endpoint '{endpoint_name}' at {endpoint_config['endpoint']}", file=sys.stderr)
         
         if 'all' in projects:
             # Get list of all projects first
             try:
                 if self.debug:
-                    print(f"Debug: Fetching all projects...", file=sys.stderr)
+                    print(f"Debug: Fetching all projects from endpoint '{endpoint_name}'...", file=sys.stderr)
                     
-                # Try different approaches to get project names
-                projects_data = self._make_request("/projects?recursion=0")
+                projects_data = self._make_request(endpoint_config, "/projects?recursion=0")
+                
+                if not projects_data:
+                    if self.debug:
+                        print(f"Debug: No projects data returned from endpoint '{endpoint_name}', skipping", file=sys.stderr)
+                    return []
                 
                 if self.debug:
                     print(f"Debug: Projects API response type: {type(projects_data)}", file=sys.stderr)
@@ -274,7 +371,7 @@ class LXDInventory:
                 else:
                     # If recursion=0 doesn't work, try without recursion parameter
                     try:
-                        projects_data = self._make_request("/projects")
+                        projects_data = self._make_request(endpoint_config, "/projects")
                         if isinstance(projects_data, dict):
                             projects = list(projects_data.keys())
                         elif isinstance(projects_data, list):
@@ -289,62 +386,70 @@ class LXDInventory:
                     projects = ['default']
                     
                 if self.debug:
-                    print(f"Debug: Found projects: {projects}", file=sys.stderr)
+                    print(f"Debug: Found projects in endpoint '{endpoint_name}': {projects}", file=sys.stderr)
                     
             except Exception as e:
-                print(f"Warning: Could not fetch all projects, using default: {e}", file=sys.stderr)
+                print(f"Warning: Could not fetch all projects from endpoint '{endpoint_name}', using default: {e}", file=sys.stderr)
                 projects = ['default']
         
         for project in projects:
             try:
                 if self.debug:
-                    print(f"Debug: Fetching instances from project '{project}'...", file=sys.stderr)
+                    print(f"Debug: Fetching instances from project '{project}' in endpoint '{endpoint_name}'...", file=sys.stderr)
                     
                 path = f"/instances?recursion=2&project={project}"
-                instances = self._make_request(path)
+                instances = self._make_request(endpoint_config, path)
+                
+                if not instances:
+                    if self.debug:
+                        print(f"Debug: No instances returned from project '{project}' in endpoint '{endpoint_name}'", file=sys.stderr)
+                    continue
                 
                 if self.debug:
-                    print(f"Debug: Found {len(instances)} instances in project '{project}'", file=sys.stderr)
+                    print(f"Debug: Found {len(instances)} instances in project '{project}' from endpoint '{endpoint_name}'", file=sys.stderr)
                 
-                # Add project info to each instance
+                # Add project and endpoint info to each instance
                 for instance in instances:
                     instance['lxd_project'] = project
+                    instance['lxd_endpoint'] = endpoint_name
                 all_instances.extend(instances)
             except Exception as e:
-                print(f"Warning: Could not fetch instances from project '{project}': {e}", file=sys.stderr)
+                print(f"Warning: Could not fetch instances from project '{project}' in endpoint '{endpoint_name}': {e}", file=sys.stderr)
                 continue
         
         if self.debug:
-            print(f"Debug: Total instances found: {len(all_instances)}", file=sys.stderr)
+            print(f"Debug: Total instances found in endpoint '{endpoint_name}': {len(all_instances)}", file=sys.stderr)
         
         return all_instances
     
-    def _filter_instance(self, instance: Dict[str, Any]) -> bool:
+    def _filter_instance(self, instance: Dict[str, Any], endpoint_config: Dict[str, Any]) -> bool:
         """Apply filters to determine if an instance should be included."""
+        filters = endpoint_config['filters']
+        
         # Filter by status
-        status_filter = [s.lower().strip() for s in self.config['filters']['status']]
+        status_filter = [s.lower().strip() for s in filters['status']]
         if status_filter and 'all' not in status_filter:
             if instance['status'].lower() not in status_filter:
                 return False
         
         # Filter by type
-        type_filter = self.config['filters']['type']
+        type_filter = filters['type']
         if type_filter and 'all' not in type_filter and instance['type'] not in type_filter:
             return False
         
         # Filter by profiles
-        profile_filter = self.config['filters']['profiles']
+        profile_filter = filters['profiles']
         if profile_filter and not any(profile in instance.get('profiles', []) for profile in profile_filter):
             return False
         
         # Exclude by name
-        exclude_names = self.config['filters']['exclude_names']
+        exclude_names = filters['exclude_names']
         if exclude_names and instance['name'] in exclude_names:
             return False
         
         return True
     
-    def _get_instance_ip(self, instance: Dict[str, Any]) -> Optional[str]:
+    def _get_instance_ip(self, instance: Dict[str, Any], endpoint_config: Dict[str, Any]) -> Optional[str]:
         """Extract the primary IP address from an instance."""
         state = instance.get('state', {})
         if not state:
@@ -354,8 +459,9 @@ class LXDInventory:
         if not network or not isinstance(network, dict):
             return None
         
-        ignore_interfaces = self.config['filters']['ignore_interfaces']
-        prefer_ipv6 = self.config['filters']['prefer_ipv6']
+        filters = endpoint_config['filters']
+        ignore_interfaces = filters['ignore_interfaces']
+        prefer_ipv6 = filters['prefer_ipv6']
         
         if self.debug:
             print(f"Debug: Ignoring interfaces: {ignore_interfaces}", file=sys.stderr)
@@ -421,8 +527,7 @@ class LXDInventory:
         return None
     
     def _generate_inventory(self) -> Dict[str, Any]:
-        """Generate the Ansible inventory."""
-        instances = self._get_instances()
+        """Generate the Ansible inventory from all endpoints."""
         inventory = {
             '_meta': {
                 'hostvars': {}
@@ -440,65 +545,106 @@ class LXDInventory:
             'lxd_error': {'hosts': []},
         }
         
-        for instance in instances:
-            if not self._filter_instance(instance):
-                continue
+        # Process each endpoint
+        for endpoint_name, endpoint_config in self.config['endpoints'].items():
+            if self.debug:
+                print(f"Debug: Processing endpoint '{endpoint_name}'", file=sys.stderr)
             
-            name = instance['name']
-            ip_address = self._get_instance_ip(instance)
+            instances = self._get_instances(endpoint_config)
             
-            # Add to main groups
-            groups['all']['hosts'].append(name)
+            # Create endpoint-specific group
+            endpoint_group_name = f'lxd_endpoint_{endpoint_name}'
+            groups[endpoint_group_name] = {'hosts': []}
             
-            # Add to type-specific groups
-            if instance['type'] == 'container':
-                groups['lxd_containers']['hosts'].append(name)
-            elif instance['type'] == 'virtual-machine':
-                groups['lxd_vms']['hosts'].append(name)
-            
-            # Add to status-specific groups
-            status = instance['status'].lower()
-            if status == 'running':
-                groups['lxd_running']['hosts'].append(name)
-            elif status == 'stopped':
-                groups['lxd_stopped']['hosts'].append(name)
-            elif status == 'frozen':
-                groups['lxd_frozen']['hosts'].append(name)
-            elif status == 'error':
-                groups['lxd_error']['hosts'].append(name)
-            
-            # Create profile-based groups
-            for profile in instance.get('profiles', []):
-                group_name = f'lxd_profile_{profile}'
-                if group_name not in groups:
-                    groups[group_name] = {'hosts': []}
-                groups[group_name]['hosts'].append(name)
-            
-            # Add host variables
-            hostvars = {
-                'lxd_name': name,
-                'lxd_type': instance['type'],
-                'lxd_status': instance['status'],
-                'lxd_architecture': instance['architecture'],
-                'lxd_profiles': instance.get('profiles', []),
-                'lxd_project': instance.get('lxd_project', 'default'),
-            }
-            
-            if ip_address:
-                hostvars['ansible_host'] = ip_address
-                hostvars['lxd_ip'] = ip_address
-            
-            # Add configuration details
-            config = instance.get('config', {})
-            if config:
-                hostvars['lxd_config'] = config
-            
-            # Add expanded config (e.g., image info)
-            expanded_config = instance.get('expanded_config', {})
-            if expanded_config:
-                hostvars['lxd_expanded_config'] = expanded_config
-            
-            inventory['_meta']['hostvars'][name] = hostvars
+            for instance in instances:
+                if not self._filter_instance(instance, endpoint_config):
+                    continue
+                
+                name = instance['name']
+                endpoint_prefix = endpoint_config.get('host_prefix', endpoint_name)
+                
+                # Create unique host name with endpoint prefix if there are multiple endpoints
+                if len(self.config['endpoints']) > 1:
+                    unique_name = f"{endpoint_prefix}_{name}"
+                else:
+                    unique_name = name
+                
+                # Check for name conflicts and resolve them
+                if unique_name in inventory['_meta']['hostvars']:
+                    # Name conflict - use more specific naming
+                    unique_name = f"{endpoint_name}_{name}"
+                    if unique_name in inventory['_meta']['hostvars']:
+                        # Still conflicts, add a counter
+                        counter = 1
+                        while f"{unique_name}_{counter}" in inventory['_meta']['hostvars']:
+                            counter += 1
+                        unique_name = f"{unique_name}_{counter}"
+                
+                ip_address = self._get_instance_ip(instance, endpoint_config)
+                
+                # Add to main groups
+                groups['all']['hosts'].append(unique_name)
+                groups[endpoint_group_name]['hosts'].append(unique_name)
+                
+                # Add to type-specific groups
+                if instance['type'] == 'container':
+                    groups['lxd_containers']['hosts'].append(unique_name)
+                elif instance['type'] == 'virtual-machine':
+                    groups['lxd_vms']['hosts'].append(unique_name)
+                
+                # Add to status-specific groups
+                status = instance['status'].lower()
+                if status == 'running':
+                    groups['lxd_running']['hosts'].append(unique_name)
+                elif status == 'stopped':
+                    groups['lxd_stopped']['hosts'].append(unique_name)
+                elif status == 'frozen':
+                    groups['lxd_frozen']['hosts'].append(unique_name)
+                elif status == 'error':
+                    groups['lxd_error']['hosts'].append(unique_name)
+                
+                # Create profile-based groups
+                for profile in instance.get('profiles', []):
+                    group_name = f'lxd_profile_{profile}'
+                    if group_name not in groups:
+                        groups[group_name] = {'hosts': []}
+                    groups[group_name]['hosts'].append(unique_name)
+                
+                # Create project-based groups
+                project = instance.get('lxd_project', 'default')
+                project_group_name = f'lxd_project_{project}'
+                if project_group_name not in groups:
+                    groups[project_group_name] = {'hosts': []}
+                groups[project_group_name]['hosts'].append(unique_name)
+                
+                # Add host variables
+                hostvars = {
+                    'lxd_name': name,
+                    'lxd_unique_name': unique_name,
+                    'lxd_type': instance['type'],
+                    'lxd_status': instance['status'],
+                    'lxd_architecture': instance['architecture'],
+                    'lxd_profiles': instance.get('profiles', []),
+                    'lxd_project': instance.get('lxd_project', 'default'),
+                    'lxd_endpoint': instance.get('lxd_endpoint', endpoint_name),
+                    'lxd_endpoint_url': endpoint_config['endpoint'],
+                }
+                
+                if ip_address:
+                    hostvars['ansible_host'] = ip_address
+                    hostvars['lxd_ip'] = ip_address
+                
+                # Add configuration details
+                config = instance.get('config', {})
+                if config:
+                    hostvars['lxd_config'] = config
+                
+                # Add expanded config (e.g., image info)
+                expanded_config = instance.get('expanded_config', {})
+                if expanded_config:
+                    hostvars['lxd_expanded_config'] = expanded_config
+                
+                inventory['_meta']['hostvars'][unique_name] = hostvars
         
         # Remove empty groups
         groups = {k: v for k, v in groups.items() if v['hosts']}
@@ -509,7 +655,17 @@ class LXDInventory:
     def get_instance_vars(self, instance_name: str) -> Dict[str, Any]:
         """Get variables for a specific instance in Ansible dynamic inventory format."""
         inventory = self._generate_inventory()
-        instance_vars = inventory['_meta']['hostvars'].get(instance_name, {})
+        
+        # Look for exact match first
+        if instance_name in inventory['_meta']['hostvars']:
+            instance_vars = inventory['_meta']['hostvars'][instance_name]
+        else:
+            # Look for partial matches (original name without endpoint prefix)
+            instance_vars = {}
+            for host_name, host_vars in inventory['_meta']['hostvars'].items():
+                if host_vars.get('lxd_name') == instance_name:
+                    instance_vars = host_vars
+                    break
         
         if not instance_vars:
             return {}
@@ -529,25 +685,25 @@ class LXDInventory:
 
 
 def main():
-    parser = argparse.ArgumentParser(description='LXD Ansible Dynamic Inventory')
+    parser = argparse.ArgumentParser(description='LXD Ansible Dynamic Inventory with Multi-Endpoint Support')
     parser.add_argument('--list', action='store_true', help='List all hosts')
     parser.add_argument('--instance', help='Get variables for a specific instance (mutually exclusive with --list)')
     parser.add_argument('--yaml', action='store_true', help='Output in YAML format')
     
     # LXD connection
-    parser.add_argument('--host', help='LXD host/cluster to connect to (overrides LXD_ENDPOINT)')
+    parser.add_argument('--host', help='LXD host/cluster to connect to (overrides config and filters to single endpoint)')
     
-    # Filtering arguments
+    # Filtering arguments (these apply to all endpoints when using multi-endpoint config)
     parser.add_argument('--status', choices=['running', 'stopped', 'frozen', 'error'], 
-                       help='Filter by instance status (only applies to --list)')
-    parser.add_argument('--type', help='Filter by type (vm,lxc) - comma separated (only applies to --list)')
-    parser.add_argument('--project', help='Filter by project(s) - comma separated')
+                       help='Filter by instance status (applies to all endpoints)')
+    parser.add_argument('--type', help='Filter by type (vm,lxc) - comma separated (applies to all endpoints)')
+    parser.add_argument('--project', help='Filter by project(s) - comma separated (applies to all endpoints)')
     parser.add_argument('--all-projects', action='store_true', 
-                       help='Include all projects - overrides --project (only applies to --list)')
-    parser.add_argument('--profile', help='Filter by profile(s) - comma separated (only applies to --list)')
-    parser.add_argument('--ignore-interface', help='Interfaces to ignore when finding IP (comma separated)')
+                       help='Include all projects - overrides --project (applies to all endpoints)')
+    parser.add_argument('--profile', help='Filter by profile(s) - comma separated (applies to all endpoints)')
+    parser.add_argument('--ignore-interface', help='Interfaces to ignore when finding IP (comma separated, applies to all endpoints)')
     parser.add_argument('--prefer-ipv6', action='store_true', 
-                       help='Prefer IPv6 addresses over IPv4 for ansible_host')
+                       help='Prefer IPv6 addresses over IPv4 for ansible_host (applies to all endpoints)')
     parser.add_argument('--config', help='Path to YAML configuration file (default: ./lxd_inventory.yml)')
     parser.add_argument('--debug', action='store_true', 
                        help='Enable debug output')

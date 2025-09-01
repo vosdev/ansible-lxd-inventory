@@ -240,10 +240,10 @@ filters:
 ```yaml
 filters:
   exclude_names:
-    - 'vm1'                   # excludes vm1 from any project
-    - 'project/vm1'           # excludes vm1 only from specified project
-    - 'regex:^vm.*'         # excludes instances matching regex pattern
-    - 'regex:project/^vm[1-3]' # excludes instances matching regex in specific project
+    - 'vm1'                     # excludes vm1 from any project
+    - 'project/vm1'             # excludes vm1 only from specified project
+    - 'regex:^vm.*'             # excludes instances matching regex pattern
+    - 'regex:project/^vm[1-3]'  # excludes instances matching regex in specific project
 ```
 
 ## Hostname Formatting

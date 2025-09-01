@@ -368,7 +368,7 @@ lxd_profiles: ["default", "web"]
 lxd_project: "production"
 lxd_endpoint: "production" 
 lxd_endpoint_url: "https://prod-lxd:8443"
-lxd_ip: "10.0.1.100"
+lxd_ip: ["10.0.1.100","2001:db8::100"]
 lxd_config: {...}
 lxd_expanded_config: {...}
 ansible_host: "10.0.1.100"

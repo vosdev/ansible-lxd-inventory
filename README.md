@@ -446,10 +446,10 @@ lxd_endpoints:
     filters:
       projects: [all]
       exclude_names:
-        - webshop/nginx1                    # Exclude nginx1 in the staging project
-        - sophos                            # Exclude all instances named sophos
-        - 'regex:^talos.*'                  # Exclude all instances starting with talos
-        - 'regex:security/^opnsense[1-2]'   # Exclude opnsense1 and opnsense2 in the security project
+        - webshop/nginx1                  # Exclude nginx1 in the staging project
+        - sophos                          # Exclude all instances named sophos
+        - 'regex:^talos.*'                # Exclude all instances starting with talos
+        - 'regex:security/^opnsense[1-2]' # Exclude opnsense1 and opnsense2 in the security project
 ```
 
 ## Troubleshooting

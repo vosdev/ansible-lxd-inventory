@@ -108,7 +108,8 @@ class LXDInventory:
                 'profiles': [],
                 'ignore_interfaces': ['lo', 'docker0', 'cilium_host', 'cilium_vxlan', 'cilium_net'],
                 'prefer_ipv6': False,
-                'exclude_names': []
+                'exclude_names': [],
+                'tags': {}
             }
         }
         
@@ -237,8 +238,63 @@ class LXDInventory:
         else:
             filters['exclude_names'] = []
         
+        # Tag filters - from CLI and config file
+        if self.args and self.args.tag:
+            filters['tags'] = self._parse_tag_filters(self.args.tag.split(','))
+        elif 'tags' in endpoint_filters:
+            tag_filter = endpoint_filters['tags']
+            if isinstance(tag_filter, dict):
+                filters['tags'] = tag_filter
+            elif isinstance(tag_filter, list):
+                filters['tags'] = self._parse_tag_filters(tag_filter)
+            else:
+                filters['tags'] = self._parse_tag_filters([tag_filter])
+        elif 'tags' in global_filters:
+            tag_filter = global_filters['tags']
+            if isinstance(tag_filter, dict):
+                filters['tags'] = tag_filter
+            elif isinstance(tag_filter, list):
+                filters['tags'] = self._parse_tag_filters(tag_filter)
+            else:
+                filters['tags'] = self._parse_tag_filters([tag_filter])
+        else:
+            filters['tags'] = {}
+        
         config['filters'] = filters
         return config
+    
+    def _parse_tag_filters(self, tag_list: List[str]) -> Dict[str, str]:
+        """Parse tag filter strings into a dictionary.
+        
+        Supports formats like:
+        - 'user.ansible=true'
+        - 'user.env=production'
+        - 'user.managed!=false' (negation)
+        """
+        parsed_tags = {}
+        
+        for tag_filter in tag_list:
+            tag_filter = tag_filter.strip()
+            if not tag_filter:
+                continue
+            
+            # Handle negation (!=)
+            if '!=' in tag_filter:
+                key, value = tag_filter.split('!=', 1)
+                key = key.strip()
+                value = value.strip()
+                parsed_tags[key] = {'value': value, 'negate': True}
+            elif '=' in tag_filter:
+                key, value = tag_filter.split('=', 1)
+                key = key.strip()
+                value = value.strip()
+                parsed_tags[key] = {'value': value, 'negate': False}
+            else:
+                # Just a key without value means check for existence
+                key = tag_filter.strip()
+                parsed_tags[key] = {'value': None, 'negate': False}
+        
+        return parsed_tags
     
     def _load_yaml_config(self) -> Dict[str, Any]:
         """Load configuration from YAML file."""
@@ -454,6 +510,71 @@ class LXDInventory:
         exclude_names = filters['exclude_names']
         if exclude_names and instance['name'] in exclude_names:
             return False
+        
+        # Filter by tags (user.* configuration keys)
+        tag_filters = filters.get('tags', {})
+        if tag_filters:
+            if not self._match_tag_filters(instance, tag_filters):
+                return False
+        
+        return True
+    
+    def _match_tag_filters(self, instance: Dict[str, Any], tag_filters: Dict[str, Any]) -> bool:
+        """Check if an instance matches the tag filters."""
+        # Check both config (instance-specific) and expanded_config (includes profile values)
+        instance_config = instance.get('config', {})
+        expanded_config = instance.get('expanded_config', {})
+        
+        for tag_key, filter_spec in tag_filters.items():
+            # Handle different formats for tag filters
+            if isinstance(filter_spec, dict):
+                # Dictionary format (from _parse_tag_filters or explicit YAML dict)
+                expected_value = filter_spec['value']
+                negate = filter_spec['negate']
+                actual_tag_key = tag_key
+            else:
+                # String value from YAML config - check for negation syntax
+                expected_value = filter_spec
+                if tag_key.endswith('!='):
+                    # Handle negation syntax in YAML: "user.ansible!=": "false"
+                    actual_tag_key = tag_key[:-2]  # Remove the != suffix
+                    negate = True
+                else:
+                    actual_tag_key = tag_key
+                    negate = False
+            
+            # Check expanded_config first (includes profile values), then fall back to instance config
+            actual_value = expanded_config.get(actual_tag_key)
+            if actual_value is None:
+                actual_value = instance_config.get(actual_tag_key)
+            
+            config_source = "expanded" if actual_tag_key in expanded_config else "instance"
+            
+            if expected_value is None:
+                # Just checking for key existence
+                key_exists = (actual_tag_key in expanded_config) or (actual_tag_key in instance_config)
+                if negate:
+                    if key_exists:
+                        if self.debug:
+                            print(f"Debug: Instance {instance['name']} excluded - tag '{actual_tag_key}' exists in {config_source} config (negated)", file=sys.stderr)
+                        return False
+                else:
+                    if not key_exists:
+                        if self.debug:
+                            print(f"Debug: Instance {instance['name']} excluded - tag '{actual_tag_key}' missing from both configs", file=sys.stderr)
+                        return False
+            else:
+                # Checking for specific value
+                if negate:
+                    if actual_value == expected_value:
+                        if self.debug:
+                            print(f"Debug: Instance {instance['name']} excluded - tag '{actual_tag_key}={actual_value}' in {config_source} config matches negated value '{expected_value}'", file=sys.stderr)
+                        return False
+                else:
+                    if actual_value != expected_value:
+                        if self.debug:
+                            print(f"Debug: Instance {instance['name']} excluded - tag '{actual_tag_key}={actual_value}' in {config_source} config doesn't match required value '{expected_value}'", file=sys.stderr)
+                        return False
         
         return True
     
@@ -751,6 +872,7 @@ def main():
     parser.add_argument('--all-projects', action='store_true', 
                        help='Include all projects - overrides --project (applies to all endpoints)')
     parser.add_argument('--profile', help='Filter by profile(s) - comma separated (applies to all endpoints)')
+    parser.add_argument('--tag', help='Filter by user.* tags - comma separated (e.g. user.ansible=true,user.env!=test) (applies to all endpoints)')
     parser.add_argument('--ignore-interface', help='Interfaces to ignore when finding IP (comma separated, applies to all endpoints)')
     parser.add_argument('--prefer-ipv6', action='store_true', 
                        help='Prefer IPv6 addresses over IPv4 for ansible_host (applies to all endpoints)')

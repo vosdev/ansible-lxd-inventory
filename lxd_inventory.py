@@ -506,9 +506,9 @@ class LXDInventory:
         if profile_filter and not any(profile in instance.get('profiles', []) for profile in profile_filter):
             return False
         
-        # Exclude by name
-        exclude_names = filters['exclude_names']
-        if exclude_names and instance['name'] in exclude_names:
+        # Check exclude_names filter
+        exclude_names = filters.get('exclude_names', [])
+        if self._should_exclude_instance(instance, exclude_names):
             return False
         
         # Filter by tags (user.* configuration keys)
@@ -518,6 +518,66 @@ class LXDInventory:
                 return False
         
         return True
+    
+    def _should_exclude_instance(self, instance: Dict[str, Any], exclude_names: List[str]) -> bool:
+        """Check if an instance should be excluded based on exclude_names patterns.
+        
+        Supports multiple formats:
+        - 'vm1' - excludes vm1 from any project
+        - 'project/vm1' - excludes vm1 only from specified project
+        - 'regex:^test.*' - excludes instances matching regex pattern
+        - 'regex:project/^test.*' - excludes instances matching regex in specific project
+        """
+        if not exclude_names:
+            return False
+        
+        instance_name = instance['name']
+        instance_project = instance.get('lxd_project', 'default')
+        
+        for exclude_pattern in exclude_names:
+            exclude_pattern = exclude_pattern.strip()
+            if not exclude_pattern:
+                continue
+            
+            # Handle regex patterns
+            if exclude_pattern.startswith('regex:'):
+                regex_pattern = exclude_pattern[6:]  # Remove 'regex:' prefix
+                
+                # Check for project-specific regex: 'regex:project/pattern'
+                if '/' in regex_pattern:
+                    pattern_project, pattern = regex_pattern.split('/', 1)
+                    if pattern_project != instance_project:
+                        continue
+                else:
+                    # Global regex pattern (any project)
+                    pattern = regex_pattern
+                
+                try:
+                    import re
+                    if re.match(pattern, instance_name):
+                        if self.debug:
+                            print(f"Debug: Instance {instance_name} excluded by regex pattern '{exclude_pattern}'", file=sys.stderr)
+                        return True
+                except re.error as e:
+                    print(f"Warning: Invalid regex pattern '{pattern}' in exclude_names: {e}", file=sys.stderr)
+                    continue
+            
+            # Handle project/name format
+            elif '/' in exclude_pattern:
+                pattern_project, pattern_name = exclude_pattern.split('/', 1)
+                if pattern_project == instance_project and pattern_name == instance_name:
+                    if self.debug:
+                        print(f"Debug: Instance {instance_name} excluded by project-specific pattern '{exclude_pattern}'", file=sys.stderr)
+                    return True
+            
+            # Handle simple name matching (any project)
+            else:
+                if exclude_pattern == instance_name:
+                    if self.debug:
+                        print(f"Debug: Instance {instance_name} excluded by global name pattern '{exclude_pattern}'", file=sys.stderr)
+                    return True
+        
+        return False
     
     def _match_tag_filters(self, instance: Dict[str, Any], tag_filters: Dict[str, Any]) -> bool:
         """Check if an instance matches the tag filters."""

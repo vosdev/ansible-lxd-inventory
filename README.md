@@ -1,14 +1,19 @@
 # LXD Ansible Dynamic Inventory Script
 
-A powerful and flexible Ansible dynamic inventory script for LXD (Linux Containers) that supports multiple endpoints, advanced filtering, and hostname customization.
+A powerful and flexible Ansible dynamic inventory script for LXD that supports multiple endpoints, advanced filtering, and hostname customization.
+
+This script was created after running into too many limitations of [community.general.lxd inventory](https://docs.ansible.com/ansible/latest/collections/community/general/lxd_inventory.html). Using many projects on multiple clusters, I ended up with over 20 inventory files. This has now been reduced to 1.
+
+
+Feel free to request additional features.
 
 ## Features
 
 - **Multi-Endpoint Support**: Connect to multiple LXD servers in a single inventory run
-- **Tag-based Filtering**: Filter instances using `user.*` configuration keys (both instance-specific and profile-inherited)
-- **Flexible Hostname Formatting**: Customize how hostnames appear in your inventory
+- **Tag-based Filtering**: Filter instances using `user.*` configuration keys
+- **Flexible Hostname Formatting**: Customize how hostnames appear in your inventory (`{name}.{project}.{endpoint}.example.com`)
 - **Project and Profile Filtering**: Filter by LXD projects and profiles
-- **Network Interface Control**: Configure IP address selection with interface filtering and IPv6 preference
+- **Network Interface Control**: Configure IP address selection with interface filtering and IPv4/6 preference
 - **Status and Type Filtering**: Include/exclude based on instance status and type
 - **SSL/TLS Support**: Full certificate management for secure connections
 - **Unix Socket Support**: Local LXD daemon connections
@@ -30,8 +35,8 @@ pip install requests-unixsocket
 ### Download
 
 ```bash
-wget https://your-repo/lxd_inventory.py
-chmod +x lxd_inventory.py
+git clone https://github.com/vosdev/ansible-lxd-inventory
+chmod +x ansible-lxd-inventory/lxd_inventory.py
 ```
 
 ## Quick Start
@@ -250,12 +255,12 @@ global_defaults:
 
 # Include project
 global_defaults:
-  hostname_format: "{name}.{project}"  # Output: "myinstance.production"
+  hostname_format: "{name}.{project}"  # Output: "myinstance.web"
 
-# FQDN-style
+# FQDN-style (My personal preference)
 global_defaults:
   hostname_format: "{name}.{project}.{endpoint}.example.com"
-  # Output: "myinstance.production.prod.example.com"
+  # Output: "myinstance.web.prod.example.com"
 
 # Per-endpoint override
 lxd_endpoints:

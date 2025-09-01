@@ -857,8 +857,12 @@ class LXDInventory:
 
 def main():
     parser = argparse.ArgumentParser(description='LXD Ansible Dynamic Inventory with Multi-Endpoint Support')
-    parser.add_argument('--list', action='store_true', help='List all hosts')
-    parser.add_argument('--instance', help='Get variables for a specific instance (mutually exclusive with --list)')
+    
+    # Make --list and --instance mutually exclusive but not required
+    action_group = parser.add_mutually_exclusive_group(required=False)
+    action_group.add_argument('--list', action='store_true', help='List all hosts (default behavior)')
+    action_group.add_argument('--instance', help='Get variables for a specific instance')
+    
     parser.add_argument('--yaml', action='store_true', help='Output in YAML format')
     
     # LXD connection
@@ -882,12 +886,8 @@ def main():
     
     args = parser.parse_args()
     
-    # Validate mutually exclusive arguments
-    if args.list and args.instance:
-        parser.error("--list and --instance are mutually exclusive")
-    
     if not args.list and not args.instance:
-        parser.error("Either --list or --instance must be specified")
+        args.list = True
     
     inventory = LXDInventory(args)
     

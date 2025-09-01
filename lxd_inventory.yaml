@@ -1,134 +1,60 @@
-# Multi-Endpoint LXD Inventory Configuration File
-# This configuration supports multiple LXD endpoints with global defaults
-# and per-endpoint overrides.
+# LXD Ansible Dynamic Inventory Configuration
+# See README.md for detailed documentation and advanced examples
 
-# Global defaults - these settings apply to all endpoints unless overridden
+# Global defaults - apply to all endpoints unless overridden
 global_defaults:
-  # SSL/TLS settings - these will be inherited by all endpoints
+  # SSL/TLS settings
   verify_ssl: false
-  cert_path: "/home/user/.config/lxc/client.crt"    # Default client certificate
-  key_path: "/home/user/.config/lxc/client.key"     # Default client private key  
-  ca_cert_path: "/home/user/.config/lxc/ca.crt"     # Default CA certificate (optional)
+  cert_path: "/home/user/.config/lxc/client.crt"
+  key_path: "/home/user/.config/lxc/client.key"
+  ca_cert_path: "/home/user/.config/lxc/ca.crt"
   
-  # Hostname formatting template - defines how hostnames appear in inventory
-  # Available variables: {name}, {project}, {endpoint}, {type}, {status}
-  # Examples:
-  #   "{name}"                           -> "monitoring" (default, backwards compatible)
-  #   "{name}.{project}"                 -> "monitoring.production"
-  #   "{name}.{project}.{endpoint}"      -> "monitoring.production.prod"
-  #   "{name}-{project}-{endpoint}"      -> "monitoring-production-prod"
-  #   "{endpoint}-{project}-{name}"      -> "prod-production-monitoring"
+  # Hostname format: {name}, {project}, {endpoint}, {type}, {status}
   hostname_format: "{name}"
   
-  # Default filters that apply to all endpoints
+  # Default filters
   filters:
-    # Instance status filter - which statuses to include
-    status:
-      - running
-      - stopped
-      - frozen
-      - error
-    
-    # Instance type filter
-    type:
-      - container
-      - virtual-machine
-    
-    # Project filter - specify projects to include or use "all"
-    projects:
-      - default
-    
-    # Profile filter - only include instances with these profiles (empty = all profiles)
-    profiles: []
-    
-    # Network interfaces to ignore when finding IP addresses
-    ignore_interfaces:
-      - lo
-      - docker0
-      - cilium_host
-      - cilium_vxlan
-      - cilium_net
-      - lxdbr0
-    
-    # IPv6 preference - set to true to prefer IPv6 addresses over IPv4
+    status: [running, stopped, frozen, error]
+    type: [container, virtual-machine]
+    projects: [default]
+    profiles: [all]
+    tags: {}
+    ignore_interfaces: [lo, docker0, cilium_host, cilium_vxlan, cilium_net, lxdbr0]
     prefer_ipv6: false
-    
-    # Instance names to exclude (optional)
     exclude_names: []
 
 # LXD endpoints configuration
 lxd_endpoints:
-  # Production environment
+  # Local LXD via Unix socket
+  local:
+    endpoint: "unix:///var/lib/lxd/unix.socket"
+    hostname_format: "{name}.local"
+    filters:
+      projects: [default]
+  
+  # Remote LXD server
   production:
     endpoint: "https://lxd-prod.example.com:8443"
-    # Uses global cert/key/ca settings by default
-    verify_ssl: true  # Override global default for production
-    
-    # Override hostname format for this endpoint
-    hostname_format: "{name}.{project}.prod.example.com"
-    
-    # Endpoint-specific filters (override global defaults)
+    verify_ssl: true
+    hostname_format: "{name}.{project}.prod"
     filters:
-      projects:
-        - production
-        - staging
-      exclude_names:
-        - prod-template
-        - prod-backup
-  
-  # Development environment
-  development:
-    endpoint: "https://lxd-dev.example.com:8443"
-    # This endpoint needs different certificates
-    cert_path: "/etc/ssl/lxd-dev-client.crt"
-    key_path: "/etc/ssl/lxd-dev-client.key"
-    ca_cert_path: "/etc/ssl/lxd-dev-ca.crt"
-    
-    # Different hostname format for development
-    hostname_format: "{name}.{project}.dev.example.com"
-    
-    filters:
-      projects:
-        - development
-        - testing
-      profiles:
-        - web
-        - database
-      prefer_ipv6: true  # Override global default for development
+      projects: [production]
+      tags:
+        user.ansible: "true"            # Only ansible-managed instances
+        "user.maintenance!=": "true"    # Exclude maintenance instances
 
-
-# Advanced configuration examples:
-
-# Your preferred naming scheme:
-# global_defaults:
-#   hostname_format: "{name}.{project}.{endpoint}.example.com"
-
-# Simple project-based naming:
-# global_defaults:
-#   hostname_format: "{name}.{project}"
-
-# Endpoint-project-name pattern:
-# global_defaults:
-#   hostname_format: "{endpoint}-{project}-{name}"
-
-# IPv6-only environment:
-# lxd_endpoints:
-#   ipv6_cluster:
-#     endpoint: "https://[2001:db8::1]:8443"
-#     hostname_format: "{name}.{project}.ipv6"
-#     filters:
-#       prefer_ipv6: true
-#       ignore_interfaces: [lo, docker0]
-
-# Local development with Unix socket:
-# lxd_endpoints:
-#   local:
-#     endpoint: "unix:///var/lib/lxd/unix.socket"
-#     hostname_format: "{name}.{project}.local"
-#     filters:
-#       projects: [development, testing]
-
-# Minimal configuration (uses all global defaults):
-# lxd_endpoints:
-#   simple:
-#     endpoint: "https://simple-lxd:8443"
+# Common tag filtering examples:
+# 
+# Exclude instances with user.ansible=false:
+#   tags:
+#     "user.ansible!=": "false"
+#
+# Only production environment:
+#   tags:
+#     user.environment: "production"
+#
+# Multiple requirements:
+#   tags:
+#     user.ansible: "true"
+#     user.environment: "production"  
+#     "user.backup!=": "true"

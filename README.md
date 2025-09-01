@@ -4,6 +4,7 @@ A powerful and flexible Ansible dynamic inventory script for LXD that supports m
 
 This script was created after running into too many limitations of [community.general.lxd inventory](https://docs.ansible.com/ansible/latest/collections/community/general/lxd_inventory.html). Using many projects on multiple clusters, I ended up with over 20 inventory files. This has now been reduced to 1.
 
+Should also work fine with Incus!
 
 Feel free to request additional features.
 

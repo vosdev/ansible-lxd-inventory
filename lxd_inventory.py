@@ -578,15 +578,15 @@ class LXDInventory:
         
         return True
     
-    def _get_instance_ip(self, instance: Dict[str, Any], endpoint_config: Dict[str, Any]) -> Optional[str]:
-        """Extract the primary IP address from an instance."""
+    def _get_instance_ips(self, instance: Dict[str, Any], endpoint_config: Dict[str, Any]) -> tuple[Optional[str], List[str]]:
+        """Extract all IP addresses from an instance and return (primary_ip, all_ips_list)."""
         state = instance.get('state', {})
         if not state:
-            return None
+            return None, []
             
         network = state.get('network')
         if not network or not isinstance(network, dict):
-            return None
+            return None, []
         
         filters = endpoint_config['filters']
         ignore_interfaces = filters['ignore_interfaces']
@@ -629,31 +629,42 @@ class LXDInventory:
                     if self.debug:
                         print(f"Debug: Found IPv6 {ip_address} on interface {interface_name}", file=sys.stderr)
         
-        # Return preferred IP type first, fallback to the other
+        # Determine primary IP based on preference
+        primary_ip = None
         if prefer_ipv6:
             if ipv6_addresses:
-                ip, interface = ipv6_addresses[0]
+                primary_ip, interface = ipv6_addresses[0]
                 if self.debug:
-                    print(f"Debug: Using preferred IPv6 {ip} from interface {interface}", file=sys.stderr)
-                return ip
+                    print(f"Debug: Using preferred IPv6 {primary_ip} from interface {interface}", file=sys.stderr)
             elif ipv4_addresses:
-                ip, interface = ipv4_addresses[0]
+                primary_ip, interface = ipv4_addresses[0]
                 if self.debug:
-                    print(f"Debug: Fallback to IPv4 {ip} from interface {interface}", file=sys.stderr)
-                return ip
+                    print(f"Debug: Fallback to IPv4 {primary_ip} from interface {interface}", file=sys.stderr)
         else:
             if ipv4_addresses:
-                ip, interface = ipv4_addresses[0]
+                primary_ip, interface = ipv4_addresses[0]
                 if self.debug:
-                    print(f"Debug: Using preferred IPv4 {ip} from interface {interface}", file=sys.stderr)
-                return ip
+                    print(f"Debug: Using preferred IPv4 {primary_ip} from interface {interface}", file=sys.stderr)
             elif ipv6_addresses:
-                ip, interface = ipv6_addresses[0]
+                primary_ip, interface = ipv6_addresses[0]
                 if self.debug:
-                    print(f"Debug: Fallback to IPv6 {ip} from interface {interface}", file=sys.stderr)
-                return ip
+                    print(f"Debug: Fallback to IPv6 {primary_ip} from interface {interface}", file=sys.stderr)
         
-        return None
+        # Create ordered list of all IPs based on preference
+        all_ips = []
+        if prefer_ipv6:
+            # IPv6 first, then IPv4
+            all_ips.extend([ip for ip, _ in ipv6_addresses])
+            all_ips.extend([ip for ip, _ in ipv4_addresses])
+        else:
+            # IPv4 first, then IPv6
+            all_ips.extend([ip for ip, _ in ipv4_addresses])
+            all_ips.extend([ip for ip, _ in ipv6_addresses])
+        
+        if self.debug and all_ips:
+            print(f"Debug: All IPs ordered by preference: {all_ips}", file=sys.stderr)
+        
+        return primary_ip, all_ips
     
     def _format_hostname(self, instance: Dict[str, Any], endpoint_config: Dict[str, Any]) -> str:
         """Format hostname using the configured hostname_format template."""
@@ -733,7 +744,7 @@ class LXDInventory:
                         print(f"Warning: Too many hostname conflicts for {original_hostname}, using {formatted_hostname}", file=sys.stderr)
                         break
                 
-                ip_address = self._get_instance_ip(instance, endpoint_config)
+                primary_ip, all_ips = self._get_instance_ips(instance, endpoint_config)
                 
                 # Add to main groups
                 groups['all']['hosts'].append(formatted_hostname)
@@ -783,9 +794,15 @@ class LXDInventory:
                     'lxd_endpoint_url': endpoint_config['endpoint'],
                 }
                 
-                if ip_address:
-                    hostvars['ansible_host'] = ip_address
-                    hostvars['lxd_ip'] = ip_address
+                # Add IP addresses
+                if primary_ip:
+                    hostvars['ansible_host'] = primary_ip
+                
+                if all_ips:
+                    hostvars['lxd_ip'] = all_ips
+                elif primary_ip:
+                    # Fallback for backward compatibility if only primary IP exists
+                    hostvars['lxd_ip'] = [primary_ip]
                 
                 # Add configuration details
                 config = instance.get('config', {})
@@ -886,6 +903,7 @@ def main():
     
     args = parser.parse_args()
     
+    # If no action specified, default to --list behavior (critical for Ansible compatibility)
     if not args.list and not args.instance:
         args.list = True
     

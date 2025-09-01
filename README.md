@@ -415,7 +415,7 @@ lxd_endpoints:
     endpoint: "unix:///var/lib/lxd/unix.socket"
     hostname_format: "{name}.local"
     filters:
-      projects: all
+      projects: [all]
       status: [running]
       tags:
         "user.ansible!=": "false"
@@ -428,12 +428,28 @@ lxd_endpoints:
   multi_env:
     endpoint: "https://multi-lxd.example.com:8443"
     filters:
-      projects: all
+      projects: [all]
       tags:
         user.managed: "true"           # Must be managed
         "user.backup!=": "true"        # Exclude backup instances
         "user.template!=": "true"      # Exclude templates
-        "user.ansible!=": "false"     # Exclude explicitly disabled
+        "user.ansible!=": "false"      # Exclude explicitly disabled
+```
+
+### Production-Environment with Name and Regex-based Exclusions
+
+```yaml
+lxd_endpoints:
+  prod:
+    endpoint: "https://lxd-prod.example.com:8443"
+    hostname_format: "{name}.{project}.{endpoint}.example.com"    # nginx2.webshop.prod.example.com
+    filters:
+      projects: [all]
+      exclude_names:
+        - webshop/nginx1                    # Exclude nginx1 in the staging project
+        - sophos                            # Exclude all instances named sophos
+        - 'regex:^talos.*'                  # Exclude all instances starting with talos
+        - 'regex:security/^opnsense[1-2]'   # Exclude opnsense1 and opnsense2 in the security project
 ```
 
 ## Troubleshooting

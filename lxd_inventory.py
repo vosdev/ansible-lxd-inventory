@@ -12,12 +12,14 @@ Usage:
 Configuration:
     Create a YAML configuration file (lxd_inventory.yml) or specify with --config.
     The script looks for config files in this order:
-    - ./lxd_inventory.yml
-    - ./lxd_inventory.yaml  
-    - ~/.config/lxd_inventory.yml
-    - ~/.config/lxd_inventory.yaml
-    - /etc/lxd_inventory.yml
-    - /etc/lxd_inventory.yaml
+    1. --config /path/to/config.yml (CLI argument)
+    2. Config based on script filename (e.g., lxd_inventory_dev.py -> lxd_inventory_dev.yml)
+    3. ./lxd_inventory.yml
+    4. ./lxd_inventory.yaml  
+    5. ~/.config/lxd_inventory.yml
+    6. ~/.config/lxd_inventory.yaml
+    7. /etc/lxd_inventory.yml
+    8. /etc/lxd_inventory.yaml
     
     CLI arguments override YAML configuration settings.
 """
@@ -296,6 +298,35 @@ class LXDInventory:
         
         return parsed_tags
     
+    def _get_config_file_from_script_name(self) -> Optional[str]:
+        """Determine config file based on script name."""
+        script_path = sys.argv[0]
+        script_name = os.path.basename(script_path)
+        
+        # Remove .py extension and look for matching config
+        base_name = script_name
+        if base_name.endswith('.py'):
+            base_name = base_name[:-3]
+        
+        # List of locations to check, in order of preference
+        config_locations = [            
+            f'/etc/{base_name}.yml',
+            f'/etc/{base_name}.yaml',
+            f'~/.config/{base_name}.yml',
+            f'~/.config/{base_name}.yaml',
+            f'./{base_name}.yml',
+            f'./{base_name}.yaml'
+        ]
+        
+        for location in config_locations:
+            expanded_path = os.path.expanduser(location)
+            if os.path.exists(expanded_path) and os.path.isfile(expanded_path):
+                if self.debug:
+                    print(f"Debug: Found script-name-based config file: {expanded_path}", file=sys.stderr)
+                return expanded_path
+        
+        return None
+    
     def _load_yaml_config(self) -> Dict[str, Any]:
         """Load configuration from YAML file."""
         config_file = None
@@ -304,23 +335,27 @@ class LXDInventory:
         if self.args and self.args.config:
             config_file = self.args.config
         else:
-            # Look for default config files in order of preference
-            default_locations = [
-                './lxd_inventory.yml',
-                './lxd_inventory.yaml',
-                '~/.config/lxd_inventory.yml',
-                '~/.config/lxd_inventory.yaml',
-                '/etc/lxd_inventory.yml',
-                '/etc/lxd_inventory.yaml'
-            ]
+            # Check for config file based on script name
+            config_file = self._get_config_file_from_script_name()
             
-            for location in default_locations:
-                expanded_path = os.path.expanduser(location)
-                if os.path.exists(expanded_path) and os.path.isfile(expanded_path):
-                    config_file = expanded_path
-                    if self.debug:
-                        print(f"Debug: Using config file: {config_file}", file=sys.stderr)
-                    break
+            if not config_file:
+                # Look for default config files in order of preference
+                default_locations = [
+                    './lxd_inventory.yml',
+                    './lxd_inventory.yaml',
+                    '~/.config/lxd_inventory.yml',
+                    '~/.config/lxd_inventory.yaml',
+                    '/etc/lxd_inventory.yml',
+                    '/etc/lxd_inventory.yaml'
+                ]
+                
+                for location in default_locations:
+                    expanded_path = os.path.expanduser(location)
+                    if os.path.exists(expanded_path) and os.path.isfile(expanded_path):
+                        config_file = expanded_path
+                        if self.debug:
+                            print(f"Debug: Using default config file: {config_file}", file=sys.stderr)
+                        break
         
         if not config_file:
             if self.debug:
@@ -957,7 +992,7 @@ def main():
     parser.add_argument('--ignore-interface', help='Interfaces to ignore when finding IP (comma separated, applies to all endpoints)')
     parser.add_argument('--prefer-ipv6', action='store_true', 
                        help='Prefer IPv6 addresses over IPv4 for ansible_host (applies to all endpoints)')
-    parser.add_argument('--config', help='Path to YAML configuration file (default: ./lxd_inventory.yml)')
+    parser.add_argument('--config', help='Path to YAML configuration file (default: script-name-based or ./lxd_inventory.yml)')
     parser.add_argument('--debug', action='store_true', 
                        help='Enable debug output')
     

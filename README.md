@@ -92,7 +92,18 @@ ansible-inventory -i lxd_inventory.py --list
 
 ### Configuration File Locations
 
-The script searches for configuration files in this order:
+To allow for multiple instances of the script in restricted environments (e.g. SemaphoreUI, AWX or Tower), the script searches for configuration files in this order based on it's file name. e.g., `lxd_inventory_dev.py` -> `lxd_inventory_dev.yml` in the following locations:
+
+1. `/etc/{base_name}.yml`
+2. `/etc/{base_name}.yaml`
+3. `~/.config/{base_name}.yml`
+4. `~/.config/{base_name}.yaml`
+5. `./{base_name}.yml`
+6. `./{base_name}.yaml`
+
+
+If those are not found, it will fallback to the default config filename in the following locations:
+
 
 1. `--config /path/to/config.yml` (CLI argument)
 2. `./lxd_inventory.yml`

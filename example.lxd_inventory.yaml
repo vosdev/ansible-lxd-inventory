@@ -17,6 +17,7 @@ global_defaults:
     status: [running, stopped, frozen, error]
     type: [container, virtual-machine]
     projects: [all]
+    exclude_projects: []
     profiles: []
     tags: {}
     ignore_interfaces: [lo, docker0, cilium_host, cilium_vxlan, cilium_net, lxdbr0]
@@ -39,6 +40,8 @@ lxd_endpoints:
     hostname_format: "{name}.{project}.prod"
     filters:
       projects: [production]
+      exclude_projects:
+        - backup
       tags:
         user.ansible: "true"            # Include instances with user.ansible=true
         "user.ansible!=": "false"       # Exclude instances with user.ansible=false

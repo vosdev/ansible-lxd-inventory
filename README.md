@@ -53,7 +53,7 @@ global_defaults:
   filters:
     status: [running, stopped]
     type: [container, virtual-machine]
-    projects: [default]
+    projects: [all]
 
 lxd_endpoints:
   local:
@@ -130,7 +130,8 @@ global_defaults:
   filters:
     status: [running, stopped, frozen, error]
     type: [container, virtual-machine]
-    projects: [default]
+    projects: [all]    
+    exclude_projects: []
     profiles: []
     tags: {}
     ignore_interfaces: [lo, docker0, lxdbr0]
@@ -173,18 +174,32 @@ filters:
 
 ### Project Filtering
 
+Filter instances based on their project.
+
+#### CLI Examples
 ```bash
 # CLI - specific projects
 ./lxd_inventory.py --list --project production,development
 
 # CLI - all projects
 ./lxd_inventory.py --list --all-projects
+```
 
-# Config
+#### Configuration Examples
+```yaml
 filters:
+  # only list instances from production and development project
   projects: [production, development]
-  # or
-  projects: all
+
+  # list instances from all projects (default value)
+  projects: [all]
+
+  # list instances from all projects with some exceptions
+  projects: [all]
+  exclude_projects:
+    - backup
+    - 'regex:^temp.*'
+    - 'regex:^test[1-9]'
 ```
 
 ### Tag Filtering
@@ -447,7 +462,7 @@ lxd_endpoints:
         "user.ansible!=": "false"      # Exclude explicitly disabled
 ```
 
-### Production-Environment with Name and Regex-based Exclusions
+### Production-Environment with Name, Project and Regex-based Exclusions
 
 ```yaml
 lxd_endpoints:
@@ -457,10 +472,13 @@ lxd_endpoints:
     filters:
       projects: [all]
       exclude_names:
-        - webshop/nginx1                  # Exclude nginx1 in the staging project
+        - webshop/nginx1                  # Exclude nginx1 in the webshop project
         - sophos                          # Exclude all instances named sophos
         - 'regex:^talos.*'                # Exclude all instances starting with talos
         - 'regex:security/^opnsense[1-2]' # Exclude opnsense1 and opnsense2 in the security project
+      exclude_projects:
+        - backup                          # Exclude backup project
+        - 'regex:^temp.*'                 # Exclude all projects starting with temp
 ```
 
 ## Troubleshooting

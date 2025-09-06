@@ -106,11 +106,12 @@ class LXDInventory:
             'filters': {
                 'status': ['running', 'stopped', 'frozen', 'error'],
                 'type': ['container', 'virtual-machine'],
-                'projects': ['default'],
+                'projects': ['all'],
                 'profiles': [],
                 'ignore_interfaces': ['lo', 'docker0', 'cilium_host', 'cilium_vxlan', 'cilium_net'],
                 'prefer_ipv6': False,
                 'exclude_names': [],
+                'exclude_projects': [],
                 'tags': {}
             }
         }
@@ -239,6 +240,16 @@ class LXDInventory:
             filters['exclude_names'] = exclude if isinstance(exclude, list) else exclude.split(',')
         else:
             filters['exclude_names'] = []
+        
+        # Exclude projects - from config file only
+        if 'exclude_projects' in endpoint_filters:
+            exclude = endpoint_filters['exclude_projects']
+            filters['exclude_projects'] = exclude if isinstance(exclude, list) else exclude.split(',')
+        elif 'exclude_projects' in global_filters:
+            exclude = global_filters['exclude_projects']
+            filters['exclude_projects'] = exclude if isinstance(exclude, list) else exclude.split(',')
+        else:
+            filters['exclude_projects'] = []
         
         # Tag filters - from CLI and config file
         if self.args and self.args.tag:
@@ -438,14 +449,55 @@ class LXDInventory:
             print(f"Error with LXD endpoint '{endpoint_config['name']}': {e}", file=sys.stderr)
             return {}
     
+    def _should_exclude_project(self, project_name: str, endpoint_name: str, exclude_projects: List[str]) -> bool:
+        """Check if a project should be excluded based on exclude_projects patterns.
+        
+        Supports multiple formats:
+        - 'backup' - excludes backup project
+        - 'regex:^test.*' - excludes projects matching regex pattern
+        """
+        if not exclude_projects:
+            return False
+        
+        for exclude_pattern in exclude_projects:
+            exclude_pattern = exclude_pattern.strip()
+            if not exclude_pattern:
+                continue
+            
+            # Handle regex patterns
+            if exclude_pattern.startswith('regex:'):
+                regex_pattern = exclude_pattern[6:]  # Remove 'regex:' prefix
+                
+                try:
+                    import re
+                    if re.match(regex_pattern, project_name):
+                        if self.debug:
+                            print(f"Debug: Project '{project_name}' excluded from endpoint '{endpoint_name}' by regex pattern '{exclude_pattern}'", file=sys.stderr)
+                        return True
+                except re.error as e:
+                    print(f"Warning: Invalid regex pattern '{regex_pattern}' in exclude_projects: {e}", file=sys.stderr)
+                    continue
+            
+            # Handle simple project name matching
+            else:
+                if exclude_pattern == project_name:
+                    if self.debug:
+                        print(f"Debug: Project '{project_name}' excluded from endpoint '{endpoint_name}' by pattern '{exclude_pattern}'", file=sys.stderr)
+                    return True
+        
+        return False
+    
     def _get_instances(self, endpoint_config: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Get all instances from a specific LXD endpoint with detailed information."""
         all_instances = []
         projects = endpoint_config['filters']['projects']
         endpoint_name = endpoint_config['name']
+        exclude_projects = endpoint_config['filters']['exclude_projects']
         
         if self.debug:
             print(f"Debug: Fetching instances from endpoint '{endpoint_name}' at {endpoint_config['endpoint']}", file=sys.stderr)
+            if exclude_projects:
+                print(f"Debug: Project exclusion filters for endpoint '{endpoint_name}': {exclude_projects}", file=sys.stderr)
         
         if 'all' in projects:
             # Get list of all projects first
@@ -490,6 +542,20 @@ class LXDInventory:
             except Exception as e:
                 print(f"Warning: Could not fetch all projects from endpoint '{endpoint_name}', using default: {e}", file=sys.stderr)
                 projects = ['default']
+        
+        # Filter out excluded projects
+        if exclude_projects:
+            original_projects = projects[:]
+            projects = [p for p in projects if not self._should_exclude_project(p, endpoint_name, exclude_projects)]
+            
+            excluded = set(original_projects) - set(projects)
+            if excluded and self.debug:
+                print(f"Debug: Excluded projects from endpoint '{endpoint_name}': {sorted(excluded)}", file=sys.stderr)
+            
+            if not projects:
+                if self.debug:
+                    print(f"Debug: All projects excluded from endpoint '{endpoint_name}', skipping", file=sys.stderr)
+                return []
         
         for project in projects:
             try:

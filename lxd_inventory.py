@@ -144,6 +144,39 @@ class LXDInventory:
             'hostname_format': endpoint_config.get('hostname_format', global_defaults.get('hostname_format', '{name}')),
         }
         
+        # Group formatting templates
+        default_group_formats = {
+            'project': 'lxd_project_{project}',
+            'profile': 'lxd_profile_{profile}',
+            'endpoint': 'lxd_endpoint_{endpoint}',
+            'status': 'lxd_{status}',
+            'type': 'lxd_{type}'
+        }
+        global_group_formats = global_defaults.get('group_formats', {})
+        endpoint_group_formats = endpoint_config.get('group_formats', {})
+        
+        # Merge group formats: defaults < global < endpoint
+        group_formats = {}
+        for key, default_format in default_group_formats.items():
+            group_formats[key] = endpoint_group_formats.get(key, global_group_formats.get(key, default_format))
+        
+        config['group_formats'] = group_formats
+        
+        # User groups configuration
+        default_user_groups = {
+            'enabled': True,
+            'key': 'user.ansible_groups'
+        }
+        global_user_groups = global_defaults.get('user_groups', {})
+        endpoint_user_groups = endpoint_config.get('user_groups', {})
+        
+        # Merge user groups config: defaults < global < endpoint
+        user_groups = {}
+        for key, default_value in default_user_groups.items():
+            user_groups[key] = endpoint_user_groups.get(key, global_user_groups.get(key, default_value))
+        
+        config['user_groups'] = user_groups
+        
         # Merge filters: global defaults < endpoint config < CLI args
         filters = {}
         global_filters = global_defaults.get('filters', {})
@@ -195,7 +228,7 @@ class LXDInventory:
             else:
                 filters['projects'] = projects if isinstance(projects, list) else projects.split(',')
         else:
-            filters['projects'] = ['default']
+            filters['projects'] = ['all']
         
         # Profile filter
         if self.args and self.args.profile:
@@ -827,6 +860,59 @@ class LXDInventory:
         
         return primary_ip, all_ips
     
+    def _format_group_name(self, group_type: str, endpoint_config: Dict[str, Any], **variables) -> str:
+        """Format group name using the configured group_formats template."""
+        format_template = endpoint_config['group_formats'].get(group_type, f'lxd_{group_type}_{{{group_type}}}')
+        
+        try:
+            group_name = format_template.format(**variables)
+            # Sanitize group name - replace invalid characters with underscores
+            import re
+            group_name = re.sub(r'[^a-zA-Z0-9._-]', '_', group_name)
+            # Remove consecutive underscores and leading/trailing underscores
+            group_name = re.sub(r'_+', '_', group_name).strip('_')
+            return group_name
+        except KeyError as e:
+            print(f"Warning: Invalid variable '{e.args[0]}' in group_formats.{group_type} template, using default", file=sys.stderr)
+            return f'lxd_{group_type}_{variables.get(group_type, "unknown")}'
+        except Exception as e:
+            print(f"Warning: Error formatting group name for {group_type}: {e}, using default", file=sys.stderr)
+            return f'lxd_{group_type}_{variables.get(group_type, "unknown")}'
+    
+    def _get_user_groups(self, instance: Dict[str, Any], endpoint_config: Dict[str, Any]) -> List[str]:
+        """Extract user-defined groups from instance configuration."""
+        user_groups_config = endpoint_config['user_groups']
+        
+        if not user_groups_config['enabled']:
+            return []
+        
+        user_groups_key = user_groups_config['key']
+        
+        # Check both config (instance-specific) and expanded_config (includes profile values)
+        instance_config = instance.get('config', {})
+        expanded_config = instance.get('expanded_config', {})
+        
+        # Check expanded_config first (includes profile values), then fall back to instance config
+        groups_value = expanded_config.get(user_groups_key)
+        if groups_value is None:
+            groups_value = instance_config.get(user_groups_key)
+        
+        if not groups_value:
+            return []
+        
+        # Parse comma-separated groups
+        try:
+            groups = [group.strip() for group in groups_value.split(',') if group.strip()]
+            
+            if self.debug and groups:
+                config_source = "expanded" if user_groups_key in expanded_config else "instance"
+                print(f"Debug: Instance {instance['name']} has user groups from {config_source} config: {groups}", file=sys.stderr)
+            
+            return groups
+        except Exception as e:
+            print(f"Warning: Error parsing user groups for instance {instance['name']}: {e}", file=sys.stderr)
+            return []
+    
     def _format_hostname(self, instance: Dict[str, Any], endpoint_config: Dict[str, Any]) -> str:
         """Format hostname using the configured hostname_format template."""
         format_template = endpoint_config['hostname_format']
@@ -864,7 +950,7 @@ class LXDInventory:
             }
         }
         
-        # Group instances
+        # Group instances - Keep legacy groups for backward compatibility
         groups = {
             'all': {'hosts': []},
             'lxd_containers': {'hosts': []},
@@ -883,8 +969,11 @@ class LXDInventory:
             instances = self._get_instances(endpoint_config)
             
             # Create endpoint-specific group
-            endpoint_group_name = f'lxd_endpoint_{endpoint_name}'
-            groups[endpoint_group_name] = {'hosts': []}
+            endpoint_group_name = self._format_group_name('endpoint', endpoint_config, 
+                                                        endpoint=endpoint_name, 
+                                                        name=endpoint_name)
+            if endpoint_group_name not in groups:
+                groups[endpoint_group_name] = {'hosts': []}
             
             for instance in instances:
                 if not self._filter_instance(instance, endpoint_config):
@@ -913,11 +1002,36 @@ class LXDInventory:
                 
                 # Add to type-specific groups
                 if instance['type'] == 'container':
+                    container_group_name = self._format_group_name('type', endpoint_config, 
+                                                                 type='containers', 
+                                                                 endpoint=endpoint_name)
+                    if container_group_name not in groups:
+                        groups[container_group_name] = {'hosts': []}
+                    groups[container_group_name]['hosts'].append(formatted_hostname)
+                elif instance['type'] == 'virtual-machine':
+                    vm_group_name = self._format_group_name('type', endpoint_config, 
+                                                          type='vms', 
+                                                          endpoint=endpoint_name)
+                    if vm_group_name not in groups:
+                        groups[vm_group_name] = {'hosts': []}
+                    groups[vm_group_name]['hosts'].append(formatted_hostname)
+                
+                # Add to status-specific groups
+                status = instance['status'].lower()
+                status_group_name = self._format_group_name('status', endpoint_config, 
+                                                          status=status, 
+                                                          endpoint=endpoint_name)
+                if status_group_name not in groups:
+                    groups[status_group_name] = {'hosts': []}
+                groups[status_group_name]['hosts'].append(formatted_hostname)
+                
+                # Add to legacy groups for backward compatibility
+                if instance['type'] == 'container':
                     groups['lxd_containers']['hosts'].append(formatted_hostname)
                 elif instance['type'] == 'virtual-machine':
                     groups['lxd_vms']['hosts'].append(formatted_hostname)
                 
-                # Add to status-specific groups
+                # Add to legacy status groups for backward compatibility
                 status = instance['status'].lower()
                 if status == 'running':
                     groups['lxd_running']['hosts'].append(formatted_hostname)
@@ -930,17 +1044,28 @@ class LXDInventory:
                 
                 # Create profile-based groups
                 for profile in instance.get('profiles', []):
-                    group_name = f'lxd_profile_{profile}'
-                    if group_name not in groups:
-                        groups[group_name] = {'hosts': []}
-                    groups[group_name]['hosts'].append(formatted_hostname)
+                    profile_group_name = self._format_group_name('profile', endpoint_config, 
+                                                                profile=profile, 
+                                                                endpoint=endpoint_name)
+                    if profile_group_name not in groups:
+                        groups[profile_group_name] = {'hosts': []}
+                    groups[profile_group_name]['hosts'].append(formatted_hostname)
                 
                 # Create project-based groups
                 project = instance.get('lxd_project', 'default')
-                project_group_name = f'lxd_project_{project}'
+                project_group_name = self._format_group_name('project', endpoint_config, 
+                                                            project=project, 
+                                                            endpoint=endpoint_name)
                 if project_group_name not in groups:
                     groups[project_group_name] = {'hosts': []}
                 groups[project_group_name]['hosts'].append(formatted_hostname)
+                
+                # Create user-defined groups
+                user_groups = self._get_user_groups(instance, endpoint_config)
+                for user_group in user_groups:
+                    if user_group not in groups:
+                        groups[user_group] = {'hosts': []}
+                    groups[user_group]['hosts'].append(formatted_hostname)
                 
                 # Add host variables
                 hostvars = {

@@ -13,6 +13,8 @@ Feel free to request additional features.
 - **Multi-Endpoint Support**: Connect to multiple LXD servers in a single inventory run
 - **Tag-based Filtering**: Filter instances using `user.*` configuration keys
 - **Flexible Hostname Formatting**: Customize how hostnames appear in your inventory (`{name}.{project}.{endpoint}.example.com`)
+- **Custom Group Formatting**: Customize Ansible group names with templates
+- **User-Defined Groups**: Create custom groups using `user.ansible_groups` configuration
 - **Project and Profile Filtering**: Filter by LXD projects and profiles
 - **Network Interface Control**: Configure IP address selection with interface filtering and IPv4/6 preference
 - **Status and Type Filtering**: Include/exclude based on instance status and type
@@ -126,11 +128,24 @@ global_defaults:
   # Hostname formatting template
   hostname_format: "{name}"
   
+  # Group formatting templates
+  group_formats:
+    project: "lxd_project_{project}"     # Default format
+    profile: "lxd_profile_{profile}"
+    endpoint: "lxd_endpoint_{endpoint}"
+    status: "lxd_{status}"
+    type: "lxd_{type}"
+  
+  # User-defined groups
+  user_groups:
+    enabled: true                        # Enable user groups (default)
+    key: "user.ansible_groups"           # Configuration key to check
+  
   # Default filters
   filters:
     status: [running, stopped, frozen, error]
     type: [container, virtual-machine]
-    projects: [all]    
+    projects: [all]
     exclude_projects: []
     profiles: []
     tags: {}
@@ -308,6 +323,109 @@ lxd_endpoints:
     hostname_format: "{name}.dev.example.com"
 ```
 
+## Group Formatting
+
+Customize how Ansible groups are named using template variables:
+
+### Available Group Types
+
+- `project` - Groups by LXD project
+- `profile` - Groups by LXD profile
+- `endpoint` - Groups by LXD endpoint
+- `status` - Groups by instance status
+- `type` - Groups by instance type
+
+### Default Group Formats
+
+```yaml
+global_defaults:
+  group_formats:
+    project: "lxd_project_{project}"     # Default: lxd_project_web
+    profile: "lxd_profile_{profile}"     # Default: lxd_profile_nginx
+    endpoint: "lxd_endpoint_{endpoint}"  # Default: lxd_endpoint_production
+    status: "lxd_{status}"               # Default: lxd_running
+    type: "lxd_{type}"                   # Default: lxd_containers
+```
+
+### Custom Group Format Examples
+
+```yaml
+# Simple naming without lxd_ prefix
+global_defaults:
+  group_formats:
+    project: "{project}"                 # Output: "web"
+    profile: "{profile}"                 # Output: "nginx"
+    endpoint: "{endpoint}"               # Output: "production"
+    status: "{status}"                   # Output: "running"
+    type: "{type}"                       # Output: "containers"
+
+# Hierarchical naming
+global_defaults:
+  group_formats:
+    project: "{endpoint}_{project}"      # Output: "production_web"
+    profile: "{project}_{profile}"       # Output: "web_nginx"
+    status: "{endpoint}_{status}"        # Output: "production_running"
+
+# Per-endpoint customization
+lxd_endpoints:
+  production:
+    group_formats:
+      project: "prod_{project}"          # Output: "prod_web"
+      profile: "prod_{profile}"          # Output: "prod_nginx"
+  development:
+    group_formats:
+      project: "dev_{project}"           # Output: "dev_web"
+      profile: "dev_{profile}"           # Output: "dev_nginx"
+```
+
+## User-Defined Groups
+
+Create custom groups by setting the `user.ansible_groups` (or a key to your personal preference) configuration key on instances or profiles:
+
+### Setting User Groups
+
+```bash
+# Direct instance configuration
+lxc config set myinstance user.ansible_groups "webservers,production,frontend"
+
+# Profile-based groups (applies to all instances using the profile)
+lxc profile set nginx-profile user.ansible_groups "webservers,nginx"
+lxc profile add myinstance nginx-profile
+```
+
+### Configuration
+
+```yaml
+global_defaults:
+  user_groups:
+    enabled: true                        # Enable user-defined groups (default: true)
+    key: "user.ansible_groups"           # Configuration key to check (default)
+
+# Per-endpoint override
+lxd_endpoints:
+  production:
+    user_groups:
+      enabled: true
+      key: "user.prod_groups"            # Use different key for this endpoint
+```
+
+### Examples
+
+```bash
+# Web server instances
+lxc config set web1 user.ansible_groups "webservers,nginx,production"
+lxc config set web2 user.ansible_groups "webservers,nginx,production"
+
+# Database instances  
+lxc config set db1 user.ansible_groups "databases,mysql,production"
+lxc config set db2 user.ansible_groups "databases,mysql,production"
+
+# Load balancer
+lxc config set lb1 user.ansible_groups "loadbalancers,haproxy,production,frontend"
+```
+
+This creates Ansible groups: `webservers`, `nginx`, `production`, `databases`, `mysql`, `loadbalancers`, `haproxy`, `frontend`
+
 ## Network Configuration
 
 ### IP Address Selection
@@ -369,6 +487,7 @@ lxd_endpoints:
 
 The script automatically creates these groups:
 
+**Legacy groups (always available for backward compatibility):**
 - `all` - All instances
 - `lxd_containers` - Container instances
 - `lxd_vms` - Virtual machine instances  
@@ -376,9 +495,16 @@ The script automatically creates these groups:
 - `lxd_stopped` - Stopped instances
 - `lxd_frozen` - Frozen instances
 - `lxd_error` - Error state instances
-- `lxd_endpoint_<name>` - Instances from specific endpoint
-- `lxd_project_<name>` - Instances from specific project
-- `lxd_profile_<name>` - Instances with specific profile
+
+**Configurable groups (customizable via group_formats):**
+- Project groups - Instances from specific projects
+- Profile groups - Instances with specific profiles
+- Endpoint groups - Instances from specific endpoints
+- Status groups - Instances by status (customizable names)
+- Type groups - Instances by type (customizable names)
+
+**User-defined groups:**
+- Custom groups from `user.ansible_groups` configuration
 
 ### Host Variables
 
@@ -432,6 +558,50 @@ lxd_endpoints:
       tags:
         user.environment: "staging"
 ```
+
+With instances configured like:
+```bash
+# Web servers
+lxc config set web1 user.ansible "true"
+lxc config set web1 user.environment "production"
+
+# Database
+lxc config set db1 user.ansible "true"
+lxc config set db1 user.environment "production"
+```
+
+### Production Setup with Custom Group Naming
+
+```yaml
+global_defaults:
+  verify_ssl: true
+  cert_path: "/etc/ssl/lxd-client.crt"
+  key_path: "/etc/ssl/lxd-client.key"
+  hostname_format: "{name}.{project}.{endpoint}.example.com"
+
+  # Custom group naming
+  group_formats:
+    project: "{endpoint}_{project}"      # production_web instead of lxd_project_web
+    profile: "{project}_{profile}"       # web_nginx instead of lxd_profile_nginx
+    endpoint: "{endpoint}"               # production instead of lxd_endpoint_production
+    status: "{status}"                   # running instead of lxd_running
+    type: "{type}"                       # containers instead of lxd_containers
+  
+  # Enable user-defined groups
+  user_groups:
+    enabled: true
+    key: "user.ansible_groups"
+```
+
+With instances configured like:
+```bash
+# Web servers
+lxc config set web1 user.ansible_groups "webservers,nginx,frontend"
+
+# Database
+lxc config set db1 user.ansible_groups "databases,mysql,backend"
+```
+
 
 ### Development Environment
 
@@ -495,6 +665,7 @@ This shows:
 - Instance filtering decisions  
 - IP address selection
 - Tag matching results
+- Group creation and naming
 
 ### Common Issues
 
@@ -517,6 +688,17 @@ This shows:
 - Verify instances have network interfaces configured
 - Use `--debug` to see network interface processing
 
+**Group names not as expected:**
+- Check `group_formats` configuration
+- Use `--debug` to see group name generation
+- Verify template variables are correct
+
+**User groups not appearing:**
+- Verify `user_groups.enabled` is `true`
+- Check the `user_groups.key` configuration
+- Use `--debug` to see user group parsing
+- Ensure instances have the correct configuration key set
+
 ### Testing Configuration
 
 ```bash
@@ -528,6 +710,9 @@ This shows:
 
 # Validate instance details  
 ./lxd_inventory.py --instance mycontainer
+
+# Test group formatting
+./lxd_inventory.py --list --debug | grep -E "(Debug:|\"hosts\")"
 ```
 
 ## Contributing
